@@ -1,0 +1,17 @@
+**/bin/
+**/obj/
+.vs/
+.idea/
+.superpowers/
+artifacts/
+*.user
+*.suo
+*.gguf
+*.safetensors
+*.db
+*.db-shm
+*.db-wal
+*.log
+.env
+runtime/
+models/

@@ -1,0 +1,26 @@
+name: 缺陷 / 候选读取问题
+description: 报告可复现问题，诊断原文请先检查
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Pinyin Gloss 版本 / commit
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows build、微软拼音设置与目标应用
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤、预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostic
+    attributes:
+      label: 已检查隐私的结构诊断（可选）
+      description: 请勿上传私人候选文本、密钥或完整提示词。
