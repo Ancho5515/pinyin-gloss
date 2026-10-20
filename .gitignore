@@ -15,3 +15,5 @@ artifacts/
 .env
 runtime/
 models/
+LLM/
+llm-installation.json

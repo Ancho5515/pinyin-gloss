@@ -3,7 +3,11 @@ namespace PinyinGloss.Providers;
 public static class GgufMetadata
 {
     public static void ValidateQ8(Stream stream)
+        => ValidateQuantization(stream, "Q8_0");
+    public static void ValidateQuantization(Stream stream, string quantization)
     {
+        var expected = quantization switch { "Q8_0" => 7u, "Q6_K" => 18u, "Q5_K_M" => 17u, "Q4_K_M" => 15u,
+            _ => throw new InvalidDataException("不支持的 LMT 量化选择") };
         try
         {
             using var reader = new BinaryReader(stream, Encoding.UTF8, true);
@@ -15,13 +19,13 @@ public static class GgufMetadata
                 var key = ReadString(reader); var type = reader.ReadUInt32();
                 if (key == "general.file_type")
                 {
-                    if (type != 4 || reader.ReadUInt32() != 7) throw new InvalidDataException("LMT 首版要求 Q8_0（GGUF general.file_type=7），不会自动降为 Q4");
+                    if (type != 4 || reader.ReadUInt32() != expected) throw new InvalidDataException($"GGUF 量化与所选 {quantization} 不符，不自动换精度");
                     return;
                 }
                 Skip(reader, type, 0);
                 if (stream.Position > 64 * 1024 * 1024) throw new InvalidDataException("GGUF metadata 超过 64 MiB");
             }
-            throw new InvalidDataException("GGUF 缺少量化类型，不能确认 Q8_0");
+            throw new InvalidDataException("GGUF 缺少量化类型，不能确认所选精度");
         }
         catch (EndOfStreamException ex) { throw new InvalidDataException("GGUF header 损坏", ex); }
     }

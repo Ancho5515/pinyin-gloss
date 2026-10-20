@@ -10,15 +10,17 @@ internal static class Program
     {
         if (!OperatingSystem.IsWindows()) return 2;
         var diagnose = args.Contains("--diagnose"); var includeText = args.Contains("--include-text");
+        if (diagnose) Console.OutputEncoding = new System.Text.UTF8Encoding(false);
         string? Value(string flag) { var index = Array.IndexOf(args, flag); return index >= 0 && index + 1 < args.Length ? args[index + 1] : null; }
         var pipeName = Value("--pipe");
         if (!diagnose && string.IsNullOrWhiteSpace(pipeName)) { Console.WriteLine("PinyinGloss.CandidateReader --diagnose [--include-text] | --pipe NAME"); return 2; }
         int Integer(string flag, int defaultValue, int min, int max) => int.TryParse(Value(flag), out var number) ? Math.Clamp(number, min, max) : defaultValue;
-        var poll = Integer("--poll-ms", 50, 25, 1000); var max = Integer("--max-candidates", 5, 1, 10);
+        var poll = Integer("--poll-ms", 50, 25, 1000); var max = Integer("--max-candidates", 10, 1, 10);
+        var sentence = args.Contains("--sentence"); var selection = args.Contains("--selection");
         using var cancel = new CancellationTokenSource(); Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancel.Cancel(); };
         if (diagnose) { cancel.CancelAfter(TimeSpan.FromSeconds(Integer("--seconds", 30, 1, 300))); Console.WriteLine($"Pinyin Gloss UIA diagnostic | {Environment.OSVersion} | text={includeText}"); }
         var channel = Channel.CreateBounded<ReaderMessage>(new BoundedChannelOptions(32) { FullMode = BoundedChannelFullMode.DropOldest, SingleReader = true });
-        var thread = new Thread(() => Observe(channel.Writer, poll, max, cancel.Token)) { IsBackground = true, Name = "UIA MTA" };
+        var thread = new Thread(() => Observe(channel.Writer, poll, max, sentence, selection, cancel.Token)) { IsBackground = true, Name = "UIA MTA" };
         thread.SetApartmentState(ApartmentState.MTA); thread.Start();
         try
         {
@@ -30,7 +32,9 @@ internal static class Program
                 {
                     if (message.Kind == ReaderMessageKind.Snapshot) Console.WriteLine($"snapshot={message.Snapshot!.Generation} count={message.Snapshot.Candidates.Count} " +
                         string.Join(" | ", message.Snapshot.Candidates.Select(c => $"{c.VisibleIndex}:" + (includeText ? c.Text : c.Id))));
-                    else if (message.Kind is ReaderMessageKind.Hidden or ReaderMessageKind.Status) Console.WriteLine(message.Kind + ": " + message.Status);
+                    else if (message.Kind == ReaderMessageKind.Text) Console.WriteLine(message.Text == null ? "text=cleared" : $"text={message.Text.Mode} status={message.Text.Status} length={message.Text.Text.Length}" + (includeText ? " " + message.Text.Text : ""));
+                    else if (message.Kind == ReaderMessageKind.TextStatus) Console.WriteLine("text-status=" + System.Text.Json.JsonSerializer.Serialize(message.TextDiagnostic));
+                    else if (message.Kind is ReaderMessageKind.Hidden or ReaderMessageKind.Status or ReaderMessageKind.Focus or ReaderMessageKind.CandidatesClosed) Console.WriteLine(message.Kind + ": " + message.Status);
                 }
                 else await PipeProtocol.WriteAsync(pipe!, message, cancel.Token);
             }
@@ -39,9 +43,12 @@ internal static class Program
         catch (IOException) { return 1; }
         return 0;
     }
-    private static void Observe(ChannelWriter<ReaderMessage> writer, int poll, int max, CancellationToken token)
+    private static void Observe(ChannelWriter<ReaderMessage> writer, int poll, int max, bool sentence, bool selection, CancellationToken token)
     {
-        var scanner = new UiaCandidateScanner(); string? previous = null; string? previousStatus = null; bool visible = false; bool changed = true;
+        using var scanner = new UiaCandidateScanner(); var state = new CandidateReadState(); string? previousStatus = null; bool changed = true;
+        var textReader = sentence || selection ? new TextReader() : null; InputFocus? previousFocus = null; TextSnapshot? previousText = null;
+        TextReadDiagnostic? previousTextDiagnostic = null;
+        writer.TryWrite(new(ReaderMessageKind.Status, Status: scanner.Diagnostics));
         Native.WinEventCallback callback = (_, evt, _, _, _, _, _) => changed = true;
         // OUTOFCONTEXT + SKIPOWNPROCESS. These observe UI visibility, never keyboard input.
         var foregroundHook = Native.SetWinEventHook(3, 3, 0, callback, 0, 0, 2);
@@ -56,16 +63,17 @@ internal static class Program
                 changed = false;
                 writer.TryWrite(new(ReaderMessageKind.Heartbeat, Status: "scan-start"));
                 var snapshot = scanner.Scan(max);
+                var text = textReader?.ReadAsync(new(sentence, selection, snapshot != null || scanner.IsConfirmingPage), token).GetAwaiter().GetResult();
                 writer.TryWrite(new(ReaderMessageKind.Heartbeat, Status: "scan-end"));
-                if (snapshot != null)
-                {
-                    visible = true;
-                    // Always update geometry, but keep the snapshot ID stable if only position changes.
-                    writer.TryWrite(new(ReaderMessageKind.Snapshot, snapshot)); previous = snapshot.SnapshotId;
-                }
-                else if (visible || previous != null) { visible = false; previous = null; writer.TryWrite(new(ReaderMessageKind.Hidden)); }
+                if (previousFocus != text?.Focus) { previousFocus = text?.Focus; writer.TryWrite(new(ReaderMessageKind.Focus, Focus: text?.Focus)); }
+                if (previousText != text?.Text) { previousText = text?.Text; writer.TryWrite(new(ReaderMessageKind.Text, Text: text?.Text)); }
+                if (text != null && previousTextDiagnostic != text.Diagnostic with { ElapsedMs = 0 })
+                { previousTextDiagnostic = text.Diagnostic with { ElapsedMs = 0 }; writer.TryWrite(new(ReaderMessageKind.TextStatus, TextDiagnostic: text.Diagnostic)); }
+                // Page confirmation retains the previous display; only a real disappearance hides it.
+                var update = state.Update(snapshot, scanner.IsConfirmingPage);
+                if (update != null) writer.TryWrite(update.Kind == ReaderMessageKind.Hidden ? update with { Kind = ReaderMessageKind.CandidatesClosed } : update);
                 if (previousStatus != scanner.Diagnostics) { previousStatus = scanner.Diagnostics; writer.TryWrite(new(ReaderMessageKind.Status, Status: previousStatus)); }
-                next = DateTime.UtcNow.AddMilliseconds(visible ? poll : 500);
+                next = DateTime.UtcNow.AddMilliseconds(snapshot != null || scanner.IsConfirmingPage || sentence || selection ? poll : 500);
             }
         }
         catch (Exception ex) { writer.TryWrite(new(ReaderMessageKind.Hidden, Status: ex.GetType().Name)); }

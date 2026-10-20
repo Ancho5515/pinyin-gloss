@@ -11,13 +11,14 @@ public record AppSettings
     public CaptureSettings Capture { get; set; } = new();
     public ResponseSettings Response { get; set; } = new();
     public DisplaySettings Display { get; set; } = new();
+    public TextTranslationSettings TextTranslation { get; set; } = new();
     public ResourceSettings Resources { get; set; } = new();
     public StartupSettings Startup { get; set; } = new();
     public List<ProviderSettings> Providers { get; set; } = [];
     public List<ColumnSettings> Columns { get; set; } = [];
     public static AppSettings CreateDefault() => new()
     {
-        Providers = [new() { Id = "lmt", Name = "LMT Q8_0", Kind = ProviderKind.LocalModel, Enabled = false,
+        Providers = [new() { Id = "lmt", Name = "LMT Q4_K_M", Kind = ProviderKind.LocalModel, Enabled = false,
             Managed = true, SupportedTargets = ["en", "ja", "ko", "fr", "de", "es", "ru", "ar", "pt", "it"] },
             new() { Id = "dictionary", Name = "示例词典", Kind = ProviderKind.LocalDictionary, DictionaryPath = "dictionaries/demo.db", SupportedTargets = ["en"] }],
         Columns = [new() { Id = "lmt-en", SourceId = "lmt", TargetLanguage = "en", FallbackSourceIds = ["dictionary"] },
@@ -28,7 +29,7 @@ public record CaptureSettings
 {
     public int PollMs { get; set; } = 50;
     public int WatchdogMs { get; set; } = 500;
-    public int MaxCandidates { get; set; } = 5;
+    public int MaxCandidates { get; set; } = 10;
 }
 public record ResponseSettings
 {
@@ -37,7 +38,7 @@ public record ResponseSettings
     public int LocalStallMs { get; set; } = 800;
     public int OnlineStallMs { get; set; } = 2000;
     public int DictionaryTimeoutMs { get; set; } = 50;
-    public int CancelGraceMs { get; set; } = 300;
+    public int CancelGraceMs { get; set; } = 1500;
     public int MemoryCacheEntries { get; set; } = 1000;
 }
 public record DisplaySettings
@@ -46,6 +47,22 @@ public record DisplaySettings
     public int OffsetX { get; set; }
     public int OffsetY { get; set; } = 8;
     public bool Dark { get; set; }
+    public bool FollowSystemTheme { get; set; } = true;
+}
+public record TextTranslationSettings
+{
+    public bool SentenceEnabled { get; set; }
+    public bool SelectionEnabled { get; set; }
+    public string SourceId { get; set; } = "lmt";
+    public string TargetLanguage { get; set; } = "en";
+    public int StableMs { get; set; } = 300;
+    public int MaxWaitMs { get; set; } = 1000;
+    public int DeadlineMs { get; set; } = 3000;
+    public double? Right { get; set; }
+    public double? Bottom { get; set; }
+    public double Width { get; set; } = 420;
+    public double Height { get; set; } = 180;
+    public bool Enabled => SentenceEnabled || SelectionEnabled;
 }
 public record ResourceSettings
 {
@@ -71,11 +88,13 @@ public record ProviderSettings
     public string ApiKeyEnvironmentVariable { get; set; } = "";
     public string Model { get; set; } = "NiuTrans/LMT-60-1.7B";
     public string ModelRevision { get; set; } = "unverified";
-    public string Quantization { get; set; } = "Q8_0";
+    public string Quantization { get; set; } = "Q4_K_M";
     public string ModelSha256 { get; set; } = "";
     public bool Managed { get; set; }
     public string ExecutablePath { get; set; } = "";
+    public string CpuExecutablePath { get; set; } = "";
     public string ModelPath { get; set; } = "";
+    public bool UseInstalledModel { get; set; }
     public bool UseGpu { get; set; } = true;
     public int ContextTokens { get; set; } = 512;
     public int InputTokenBudget { get; set; } = 448;
@@ -124,7 +143,7 @@ public static class SettingsValidator
         void Check(bool ok, string message) { if (!ok) errors.Add(message); }
         void Range(int value, int min, int max, string field) => Check(value >= min && value <= max, $"{field}: {min}–{max}");
         Check(s.SchemaVersion == 1, "不支持的 schemaVersion");
-        if (s.Capture is null || s.Response is null || s.Display is null || s.Resources is null || s.Startup is null || s.Providers is null || s.Columns is null)
+        if (s.Capture is null || s.Response is null || s.Display is null || s.TextTranslation is null || s.Resources is null || s.Startup is null || s.Providers is null || s.Columns is null)
             return ["配置分组不可为 null"];
         Range(s.Capture.PollMs, 25, 1000, "pollMs"); Range(s.Capture.WatchdogMs, 100, 5000, "watchdogMs");
         Range(s.Capture.MaxCandidates, 1, 10, "maxCandidates"); Range(s.Response.StableMs, 0, 2000, "stableMs");
@@ -138,6 +157,17 @@ public static class SettingsValidator
         Check(s.Providers.Count is > 0 and <= 16 && s.Providers.All(x => x != null), "来源数量必须为 1–16，且非 null");
         Check(s.Columns.Count is > 0 and <= 8 && s.Columns.All(x => x != null), "列数量必须为 1–8，且非 null");
         if (s.Providers.Any(x => x == null) || s.Columns.Any(x => x == null)) return errors;
+        var text = s.TextTranslation;
+        Range(text.StableMs, 0, 2000, "text.stableMs"); Range(text.MaxWaitMs, Math.Max(1, text.StableMs), 5000, "text.maxWaitMs");
+        Range(text.DeadlineMs, 100, 30000, "text.deadlineMs");
+        Check(double.IsFinite(text.Width) && text.Width >= 240 && text.Width <= 1600 && double.IsFinite(text.Height) && text.Height >= 100 && text.Height <= 1200, "正文窗口尺寸无效");
+        Check((text.Right == null || double.IsFinite(text.Right.Value)) && (text.Bottom == null || double.IsFinite(text.Bottom.Value)), "正文窗口位置无效");
+        if (text.Enabled)
+        {
+            var model = s.Providers.FirstOrDefault(p => p.Id == text.SourceId);
+            Check(model?.Kind == ProviderKind.LocalModel && model.SupportedTargets.Contains(text.TargetLanguage), "正文翻译需要支持目标语言的本地模型");
+            Check(model == null || model.ContextTokens >= 256, "正文模型上下文不足");
+        }
         Check(s.Providers.Select(x => x.Id).Distinct().Count() == s.Providers.Count, "来源 ID 重复");
         Check(s.Columns.Select(x => x.Id).Distinct().Count() == s.Columns.Count, "列 ID 重复");
         foreach (var p in s.Providers)

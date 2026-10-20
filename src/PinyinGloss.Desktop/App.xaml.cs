@@ -23,13 +23,16 @@ public partial class App : Application
             var directory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PinyinGloss");
             Directory.CreateDirectory(directory);
             var settingsPath = Path.Combine(directory, "settings.json");
-            var settings = File.Exists(settingsPath) ? SettingsJson.Load(settingsPath) : AppSettings.CreateDefault();
+            var newProfile = !File.Exists(settingsPath);
+            var settings = newProfile ? AppSettings.CreateDefault() : SettingsJson.Load(settingsPath);
+            LlmInstallation.TryApply(settings, AppContext.BaseDirectory, newProfile, out var installationError);
             var demoDb = Path.Combine(directory, "dictionaries", "demo.db");
             if (!File.Exists(demoDb)) await DictionaryStore.ImportAsync(Path.Combine(AppContext.BaseDirectory, "dictionaries", "demo.tsv"), demoDb, "示例中英词典", "MIT", "Pinyin Gloss authors", default);
             foreach (var p in settings.Providers.Where(p => p.DictionaryPath == "dictionaries/demo.db")) p.DictionaryPath = demoDb;
             Runtime = new(settings, settingsPath, directory);
             var main = new MainWindow(Runtime); MainWindow = main; Runtime.Attach(main);
             await Runtime.StartAsync();
+            if (installationError != null) Runtime.ReportInstallationError(installationError);
             if (!e.Args.Contains("--background")) main.Show();
             if (e.Args.Contains("--demo")) Runtime.ShowDemo();
         }

@@ -19,14 +19,18 @@ public sealed class HttpModelProvider : ITranslationProvider, IDisposable, IAsyn
     private readonly Queue<DateTimeOffset> _starts = [];
     private Task? _loading; private DateTimeOffset _cooldown; private int _failures;
     public string State { get; private set; } = "未加载";
+    public bool IsLoading { get { lock (_sync) return _loading is { IsCompleted: false }; } }
+    public event Action? LoadCompleted;
+    private string ReadyState => _managed?.ReadyState ?? "外部服务就绪";
     public DateTimeOffset LastUsed { get; private set; } = DateTimeOffset.UtcNow;
-    public HttpModelProvider(ProviderSettings config, ResponseSettings response, HttpClient? client = null, int loadSeconds = 60)
+    public HttpModelProvider(ProviderSettings config, ResponseSettings response, HttpClient? client = null, int loadSeconds = 60, ManagedLlamaServer? managedServer = null)
     {
         _config = config; _response = response;
         // Disable redirects: credentials and candidate text must stay on the configured service.
-        _client = client ?? new(new HttpClientHandler { AllowAutoRedirect = false });
+        // 取消 SSE 时立即断开；默认 response drain 会继续读取旧输出、延迟后端感知取消。
+        _client = client ?? new(new SocketsHttpHandler { AllowAutoRedirect = false, MaxResponseDrainSize = 0, ResponseDrainTimeout = TimeSpan.Zero });
         _client.BaseAddress = new Uri(config.Endpoint.TrimEnd('/') + "/"); _client.Timeout = Timeout.InfiniteTimeSpan;
-        if (config.Managed) _managed = new(config, loadSeconds);
+        if (config.Managed) _managed = managedServer ?? new(config, loadSeconds);
     }
     public ProviderDescriptor Describe() => new(_config.Id, $"{_config.Model}:{_config.ModelRevision}:{_config.Quantization}:{_config.ModelSha256}", _config.Kind, _config.SupportedTargets, true, _managed != null);
     public Task StartAsync(CancellationToken token)
@@ -34,7 +38,7 @@ public sealed class HttpModelProvider : ITranslationProvider, IDisposable, IAsyn
         if (_disposed || !_config.Enabled || _managed == null) { State = _config.Enabled ? "外部服务" : "已禁用"; return Task.CompletedTask; }
         lock (_sync)
         {
-            if (_managed.Ready) { State = "就绪"; return Task.CompletedTask; }
+            if (_managed.Ready) { State = ReadyState; return Task.CompletedTask; }
             if (_loading is { IsCompleted: false }) return _loading;
             if (DateTimeOffset.UtcNow < _cooldown) return Task.CompletedTask;
             while (_starts.Count > 0 && DateTimeOffset.UtcNow - _starts.Peek() > TimeSpan.FromMinutes(1)) _starts.Dequeue();
@@ -47,8 +51,10 @@ public sealed class HttpModelProvider : ITranslationProvider, IDisposable, IAsyn
     {
         State = "正在加载";
         using var loadToken = CancellationTokenSource.CreateLinkedTokenSource(token, _lifetime.Token);
-        try { await _managed!.StartAsync(loadToken.Token); State = "就绪"; }
-        catch (Exception ex) { State = "加载失败: " + ex.GetType().Name; _cooldown = DateTimeOffset.UtcNow.AddSeconds(30); }
+        try { await _managed!.StartAsync(loadToken.Token); State = ReadyState; }
+        catch (OperationCanceledException) when (loadToken.IsCancellationRequested) { State = "加载已取消"; }
+        catch (Exception ex) { State = "加载失败: " + ex.Message; _cooldown = DateTimeOffset.UtcNow.AddSeconds(30); }
+        finally { LoadCompleted?.Invoke(); }
     }
     public async Task StopAsync(CancellationToken token)
     { if (_managed != null) await _managed.StopAsync(token); State = "已释放"; }
@@ -62,6 +68,9 @@ public sealed class HttpModelProvider : ITranslationProvider, IDisposable, IAsyn
         if (!string.IsNullOrEmpty(_config.ApiKeyEnvironmentVariable) && string.IsNullOrEmpty(apiKey)) return Result(ResultStatus.Unavailable, error: "missing_credential");
         using var budget = CancellationTokenSource.CreateLinkedTokenSource(token); budget.CancelAfter(Math.Max(1, q.RemainingBudgetMs));
         var ct = budget.Token;
+        var generationRequested = false; var finished = false;
+        var maxOutput = q.MaxOutputTokens ?? _config.MaxOutputTokens;
+        if (maxOutput is < 1 or > 128) return Result(ResultStatus.InvalidOutput, error: "output_token_budget");
         try
         {
             object payload; string route;
@@ -71,26 +80,27 @@ public sealed class HttpModelProvider : ITranslationProvider, IDisposable, IAsyn
                 var full = template.RootElement.GetProperty("prompt").GetString()!;
                 using var count = await PostJsonAsync("tokenize", new { content = full, add_special = true, parse_special = true }, apiKey, ct);
                 var tokens = count.RootElement.GetProperty("tokens").GetArrayLength();
-                if (tokens > _config.InputTokenBudget || tokens + _config.MaxOutputTokens + 16 > _config.ContextTokens) return Result(ResultStatus.InvalidOutput, error: "prompt_token_budget");
-                payload = new { prompt = full, n_predict = _config.MaxOutputTokens, temperature = 0, stream = true, cache_prompt = true };
+                if (tokens > Math.Min(_config.InputTokenBudget, _config.ContextTokens - maxOutput - 16) || tokens + maxOutput + 16 > _config.ContextTokens) return Result(ResultStatus.InvalidOutput, error: "prompt_token_budget");
+                payload = new { prompt = full, n_predict = maxOutput, temperature = 0, stream = true, cache_prompt = q.CachePrompt };
                 route = "completion";
             }
             else
             {
                 // No arbitrary local tokenizer can count an unknown vendor template. Enforce vendor errors and character bound, and report this limitation.
                 if (q.Prompt.Length > 8192) return Result(ResultStatus.InvalidOutput, error: "prompt_size");
-                payload = new { model = _config.Model, messages = new[] { new { role = "user", content = q.Prompt } }, temperature = 0, max_tokens = _config.MaxOutputTokens, stream = true };
+                payload = new { model = _config.Model, messages = new[] { new { role = "user", content = q.Prompt } }, temperature = 0, max_tokens = maxOutput, stream = true };
                 route = "v1/chat/completions";
             }
             using var request = Request(route, payload, apiKey);
             using var stall = CancellationTokenSource.CreateLinkedTokenSource(ct);
             var stallMs = _config.Kind == ProviderKind.OnlineModel ? _response.OnlineStallMs : _response.LocalStallMs;
             stall.CancelAfter(stallMs);
+            generationRequested = true;
             using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, stall.Token);
             response.EnsureSuccessStatusCode();
             await using var stream = await response.Content.ReadAsStreamAsync(stall.Token);
             using var reader = new StreamReader(stream, Encoding.UTF8);
-            var output = new StringBuilder(); var finished = false;
+            var output = new StringBuilder();
             while (await reader.ReadLineAsync(stall.Token) is { } line)
             {
                 if (line.Length > PipeProtocol.MaxFrameBytes) return Result(ResultStatus.InvalidOutput);
@@ -104,34 +114,63 @@ public sealed class HttpModelProvider : ITranslationProvider, IDisposable, IAsyn
                 {
                     if (root.TryGetProperty("content", out var content)) text = content.GetString();
                     if (root.TryGetProperty("stop", out var stop) && stop.GetBoolean()) finished = true;
+                    if (root.TryGetProperty("stop_type", out var stopType) && stopType.GetString() == "limit") return Result(ResultStatus.InvalidOutput, error: "output_truncated");
                     if (root.TryGetProperty("truncated", out var trunc) && trunc.GetBoolean()) return Result(ResultStatus.InvalidOutput, error: "context_truncated");
                 }
                 else if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
                 {
                     var choice = choices[0];
                     if (choice.TryGetProperty("delta", out var delta) && delta.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String) text = content.GetString();
-                    if (choice.TryGetProperty("finish_reason", out var reason) && reason.ValueKind == JsonValueKind.String) finished = true;
+                    if (choice.TryGetProperty("finish_reason", out var reason) && reason.ValueKind == JsonValueKind.String)
+                    { if (reason.GetString() == "length") return Result(ResultStatus.InvalidOutput, error: "output_truncated"); finished = true; }
                 }
                 if (!string.IsNullOrEmpty(text)) { output.Append(text); stall.CancelAfter(stallMs); }
                 if (output.Length > 1024) return Result(ResultStatus.InvalidOutput);
                 if (finished) break;
             }
             if (!finished || !OutputValidator.IsValid(output.ToString())) return Result(ResultStatus.InvalidOutput);
-            _failures = 0; State = "就绪"; return Result(ResultStatus.Ready, output.ToString().Trim());
+            _failures = 0; State = ReadyState; return Result(ResultStatus.Ready, output.ToString().Trim());
         }
         catch (OperationCanceledException)
         {
-            if (_managed != null)
-            {
-                // HTTP disconnect has no hard-cancel acknowledgement. Retire the owned worker before reuse.
-                await Task.Delay(_response.CancelGraceMs, CancellationToken.None);
-                await _managed.StopAsync(CancellationToken.None); State = "取消后已释放";
-            }
             if (token.IsCancellationRequested) throw;
             Fault(); return Result(ResultStatus.Timeout);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException)
         { Fault(); return Result(ResultStatus.Unavailable, error: ex.GetType().Name); }
+        finally
+        {
+            // 先释放 HTTP/SSE，再确认唯一槽位空闲；确认失败才释放 owned worker。
+            // 分词前取消没有提交生成；调度器在本方法结束前保留生成信号量。
+            if (_managed != null && generationRequested && !finished)
+            {
+                if (await ConfirmIdleAsync(apiKey)) { if (token.IsCancellationRequested) State = ReadyState; }
+                else { await _managed.StopAsync(CancellationToken.None); State = "取消未确认，已释放"; }
+            }
+        }
+    }
+    private async Task<bool> ConfirmIdleAsync(string? apiKey)
+    {
+        using var grace = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        grace.CancelAfter(Math.Max(1, _response.CancelGraceMs));
+        try
+        {
+            while (!grace.IsCancellationRequested)
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, "slots");
+                request.Headers.Authorization = new("Bearer", apiKey);
+                using var response = await _client.SendAsync(request, grace.Token);
+                response.EnsureSuccessStatusCode();
+                await using var stream = await response.Content.ReadAsStreamAsync(grace.Token);
+                using var json = await JsonDocument.ParseAsync(stream, cancellationToken: grace.Token);
+                var slots = json.RootElement;
+                if (slots.ValueKind != JsonValueKind.Array || slots.GetArrayLength() != 1) return false;
+                if (!slots[0].GetProperty("is_processing").GetBoolean()) return true;
+                await Task.Delay(25, grace.Token);
+            }
+        }
+        catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or JsonException or InvalidOperationException or KeyNotFoundException or ObjectDisposedException) { }
+        return false;
     }
     private void Fault() { State = "服务异常"; if (++_failures >= 3) { _cooldown = DateTimeOffset.UtcNow.AddSeconds(30); _failures = 0; } }
     private HttpRequestMessage Request(string path, object payload, string? apiKey)

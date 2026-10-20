@@ -2,4 +2,5 @@
 <PropertyGroup><OutputType>WinExe</OutputType><TargetFramework>net10.0-windows</TargetFramework><UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><ImplicitUsings>disable</ImplicitUsings><ApplicationManifest>app.manifest</ApplicationManifest></PropertyGroup>
 <ItemGroup><ProjectReference Include="../PinyinGloss.Core/PinyinGloss.Core.csproj" /><ProjectReference Include="../PinyinGloss.Providers/PinyinGloss.Providers.csproj" /></ItemGroup>
 <ItemGroup><Content Include="../../dictionaries/demo.tsv" Link="dictionaries/demo.tsv" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
+<ItemGroup><InternalsVisibleTo Include="PinyinGloss.Windows.Tests" /></ItemGroup>
 </Project>

@@ -21,7 +21,7 @@ public static class PipeProtocol
         {
             while (await ReadAsync<ReaderMessage>(stream, token) is { } message)
             {
-                if (message.ProtocolVersion != 1) throw new InvalidDataException("Unsupported IPC version");
+                if (message.ProtocolVersion != 3) throw new InvalidDataException("Unsupported IPC version");
                 receive(message);
             }
         }

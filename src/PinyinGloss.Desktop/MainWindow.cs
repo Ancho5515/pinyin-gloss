@@ -15,9 +15,11 @@ internal sealed class MainWindow : Window
     private readonly TextBlock _status = new() { TextWrapping = TextWrapping.Wrap, Margin = new(0, 10, 0, 10) };
     private readonly TabControl _tabs = new(); private readonly List<Action> _writeFields = [];
     private DataGrid? _columns; private ColumnSettings? _selectedColumn; private bool _saving;
+    private long _draftGeometryRevision;
     public MainWindow(DesktopRuntime runtime)
     {
         _runtime = runtime; _draft = SettingsJson.Clone(runtime.Settings);
+        _draftGeometryRevision = runtime.GeometryRevision;
         Title = "Pinyin Gloss · 微软拼音翻译外挂（实验版）"; Width = 1000; Height = 740; MinWidth = 780; MinHeight = 580;
         FontFamily = new("Microsoft YaHei UI"); FontSize = 14; Background = new SolidColorBrush(Color.FromRgb(246, 248, 251));
         var layout = new DockPanel { Margin = new(22) };
@@ -25,9 +27,10 @@ internal sealed class MainWindow : Window
         var subtitle = new TextBlock { Text = "保留微软拼音的输入、候选和记忆，在旁边显示翻译。", Margin = new(0, 5, 0, 10) }; DockPanel.SetDock(subtitle, Dock.Top); layout.Children.Add(subtitle);
         var footer = new StackPanel(); DockPanel.SetDock(footer, Dock.Bottom); footer.Children.Add(_status);
         var buttons = new StackPanel { Orientation = Orientation.Horizontal }; buttons.Children.Add(Button("保存并应用", async () => await SaveAsync()));
-        buttons.Children.Add(Button("重新载入", () => { _draft = SettingsJson.Clone(_runtime.Settings); BuildTabs(); }));
+        buttons.Children.Add(Button("重新载入", () => { _draft = SettingsJson.Clone(_runtime.Settings); _draftGeometryRevision = _runtime.GeometryRevision; BuildTabs(); }));
         buttons.Children.Add(Button("退出程序", _runtime.Exit)); footer.Children.Add(buttons); layout.Children.Add(footer); layout.Children.Add(_tabs); Content = layout;
-        _runtime.StatusChanged += text => _status.Text = text; _status.Text = _runtime.Status; BuildTabs();
+        _runtime.StatusChanged += text => _status.Text = text + "\n" + _runtime.TextReadStatus + (string.IsNullOrEmpty(_runtime.ModelStatus) ? "" : "\n" + _runtime.ModelStatus);
+        _status.Text = _runtime.Status; BuildTabs();
         Closing += (_, e) => { if (!_runtime.ExitRequested && _runtime.Settings.Startup.CloseToTray) { e.Cancel = true; Hide(); } else if (!_runtime.ExitRequested) { e.Cancel = true; Dispatcher.BeginInvoke(_runtime.Exit); } };
     }
     private static Button Button(string text, Action action) { var button = new Button { Content = text }; button.Click += (_, _) => { try { action(); } catch (Exception ex) { MessageBox.Show(ex.Message, "Pinyin Gloss"); } }; return button; }
@@ -42,9 +45,10 @@ internal sealed class MainWindow : Window
         panel.Children.Add(new TextBlock { Text = title }); var text = new TextBox { Text = getter().ToString(), MaxWidth = 200, HorizontalAlignment = HorizontalAlignment.Left }; panel.Children.Add(text);
         _writeFields.Add(() => { if (!int.TryParse(text.Text, out var value)) throw new ArgumentException(title + "需要整数"); setter(value); });
     }
-    private static void Toggle(StackPanel panel, string title, bool value, Action<bool> setter)
+    private static CheckBox Toggle(StackPanel panel, string title, bool value, Action<bool> setter)
     {
         var check = new CheckBox { Content = title, IsChecked = value }; check.Checked += (_, _) => setter(true); check.Unchecked += (_, _) => setter(false); panel.Children.Add(check);
+        return check;
     }
     private static TextBox TextField(StackPanel panel, string title, string value, Action<string> setter, bool multi = false)
     {
@@ -76,13 +80,26 @@ internal sealed class MainWindow : Window
         Integer(response, "内存缓存条数（0 关闭）", () => _draft.Response.MemoryCacheEntries, n => _draft.Response.MemoryCacheEntries = n);
         BuildColumns(); BuildModel(); BuildDictionary();
         var display = Tab("翻译窗 / 后台");
-        Toggle(display, "深色翻译窗", _draft.Display.Dark, b => _draft.Display.Dark = b);
+        Toggle(display, "启用当前句子翻译（读取光标所在句）", _draft.TextTranslation.SentenceEnabled, b => _draft.TextTranslation.SentenceEnabled = b);
+        Toggle(display, "启用选中文字翻译（读取当前活动文本选区）", _draft.TextTranslation.SelectionEnabled, b => _draft.TextTranslation.SelectionEnabled = b);
+        TextField(display, "正文翻译本地来源 ID", _draft.TextTranslation.SourceId, s => _draft.TextTranslation.SourceId = s);
+        TextField(display, "正文翻译目标语言", _draft.TextTranslation.TargetLanguage, s => _draft.TextTranslation.TargetLanguage = s);
+        Integer(display, "正文稳定等待（ms）", () => _draft.TextTranslation.StableMs, n => _draft.TextTranslation.StableMs = n);
+        Integer(display, "正文最大合并等待（ms）", () => _draft.TextTranslation.MaxWaitMs, n => _draft.TextTranslation.MaxWaitMs = n);
+        Integer(display, "正文翻译期限（ms）", () => _draft.TextTranslation.DeadlineMs, n => _draft.TextTranslation.DeadlineMs = n);
+        display.Children.Add(Button("恢复正文框到屏幕右下角", () => { _draft.TextTranslation.Right = _draft.TextTranslation.Bottom = null; _draft.TextTranslation.Width = 420; _draft.TextTranslation.Height = 180; _draftGeometryRevision = _runtime.GeometryRevision; }));
+        display.Children.Add(Note("正文框固定位置，可拖动和缩放。选中文字优先于光标所在句；没有活动目标时为空闲圆圈，确认目标但无法读取时显示原因。正文只交给本地模型，不进入词典缓存或默认日志。两个正文开关默认关闭。"));
+        var follow = Toggle(display, "跟随 Windows 应用主题", _draft.Display.FollowSystemTheme, b => _draft.Display.FollowSystemTheme = b);
+        var manualDark = Toggle(display, "深色翻译窗（手动）", _draft.Display.Dark, b => _draft.Display.Dark = b);
+        manualDark.IsEnabled = !_draft.Display.FollowSystemTheme;
+        follow.Checked += (_, _) => manualDark.IsEnabled = false;
+        follow.Unchecked += (_, _) => manualDark.IsEnabled = true;
         Toggle(display, "关闭设置窗口后留在托盘", _draft.Startup.CloseToTray, b => _draft.Startup.CloseToTray = b);
         Toggle(display, "登录启动（当前用户）", _draft.Startup.RunAtLogin, b => _draft.Startup.RunAtLogin = b);
         Toggle(display, "启动时预加载模型", _draft.Startup.PreloadModel, b => _draft.Startup.PreloadModel = b);
         Integer(display, "横向偏移（DIP）", () => _draft.Display.OffsetX, n => _draft.Display.OffsetX = n);
         Integer(display, "垂直间隔（DIP）", () => _draft.Display.OffsetY, n => _draft.Display.OffsetY = n);
-        display.Children.Add(Note("翻译窗不夺焦点且点击穿透；浅色/深色颜色在语言列中设置。宽度最多为屏幕工作区的 80%。默认仅使用内存缓存，不保存候选原文日志。"));
+        display.Children.Add(Note("翻译窗不夺焦点且点击穿透；默认跟随 Windows 应用深浅色，可关闭跟随后手动选择。列颜色对比度不足时使用可读文字颜色；高对比度使用系统颜色。候选更新时保留上一页，释义就绪后整页替换。宽度最多为工作区的 80%。"));
         BuildAdvanced();
     }
     private void BuildColumns()
@@ -117,17 +134,22 @@ internal sealed class MainWindow : Window
     {
         var panel = Tab("离线模型"); var model = _draft.Providers.FirstOrDefault(p => p.Kind == ProviderKind.LocalModel);
         if (model == null) { panel.Children.Add(Note("未配置本地模型，可在高级配置中添加。")); return; }
-        panel.Children.Add(Note($"当前快捷编辑来源：{model.Id}。默认 NiuTrans/LMT-60-1.7B，Q8_0 权重量化；模型与 llama-server 需另行准备。其他来源可在高级配置中添加。"));
+        panel.Children.Add(Note($"当前快捷编辑来源：{model.Id}。首次可运行程序目录的 Setup-LLM.cmd，默认下载到同级 LLM；完成后重启程序自动识别。脚本支持自定义目录。已有配置可在此修改路径。"));
         Toggle(panel, "启用该模型来源", model.Enabled, b => model.Enabled = b);
         Toggle(panel, "由外挂托管 llama-server 子进程", model.Managed, b => model.Managed = b);
-        Toggle(panel, "CUDA GPU（关闭为 CPU）", model.UseGpu, b => model.UseGpu = b);
-        var exe = TextField(panel, "llama-server.exe 绝对路径", model.ExecutablePath, text => model.ExecutablePath = text);
+        TextField(panel, "CPU 备用 server（留空复用主 server）", model.CpuExecutablePath, s => { model.CpuExecutablePath = s; model.UseInstalledModel = false; });
+        Toggle(panel, "优先 GPU，初始化失败回退 CPU（关闭则只用 CPU）", model.UseGpu, b => { model.UseGpu = b; model.UseInstalledModel = false; });
+        var exe = TextField(panel, "llama-server.exe 绝对路径", model.ExecutablePath, text => { model.ExecutablePath = text; model.UseInstalledModel = false; });
         panel.Children.Add(Button("选择 llama-server", () => { var dialog = new OpenFileDialog { Filter = "Executable|*.exe" }; if (dialog.ShowDialog() == true) exe.Text = dialog.FileName; }));
-        var gguf = TextField(panel, "LMT Q8_0 GGUF 路径", model.ModelPath, text => model.ModelPath = text);
+        var gguf = TextField(panel, "LMT GGUF 路径", model.ModelPath, text => { model.ModelPath = text; model.UseInstalledModel = false; });
         panel.Children.Add(Button("选择 GGUF", () => { var dialog = new OpenFileDialog { Filter = "GGUF|*.gguf" }; if (dialog.ShowDialog() == true) gguf.Text = dialog.FileName; }));
         TextField(panel, "本机服务地址", model.Endpoint, text => model.Endpoint = text);
-        TextField(panel, "原始模型 revision", model.ModelRevision, text => model.ModelRevision = text);
-        TextField(panel, "GGUF SHA256（可选，但建议校验）", model.ModelSha256, text => model.ModelSha256 = text);
+        TextField(panel, "模型来源 / revision", model.ModelRevision, text => { model.ModelRevision = text; model.UseInstalledModel = false; });
+        panel.Children.Add(Note("模型量化（必须与文件一致；切换下载请重新运行 Setup-LLM.cmd）"));
+        var quantization = new ComboBox { ItemsSource = new[] { "Q8_0", "Q6_K", "Q5_K_M", "Q4_K_M" }, SelectedItem = model.Quantization };
+        quantization.SelectionChanged += (_, _) => { model.Quantization = (string)quantization.SelectedItem; model.Name = "LMT " + model.Quantization; model.UseInstalledModel = false; };
+        panel.Children.Add(quantization);
+        TextField(panel, "GGUF SHA256（可选，但建议校验）", model.ModelSha256, text => { model.ModelSha256 = text; model.UseInstalledModel = false; });
         Integer(panel, "总上下文 tokens", () => model.ContextTokens, n => model.ContextTokens = n);
         Integer(panel, "输入 token 预算", () => model.InputTokenBudget, n => model.InputTokenBudget = n);
         Integer(panel, "最大输出 tokens（1–64）", () => model.MaxOutputTokens, n => model.MaxOutputTokens = n);
@@ -167,7 +189,7 @@ internal sealed class MainWindow : Window
     private async Task SaveAsync()
     {
         if (_saving) return; _saving = true;
-        try { ReadFields(); await _runtime.SaveAsync(SettingsJson.Clone(_draft)); _draft = SettingsJson.Clone(_runtime.Settings); BuildTabs(); }
+        try { ReadFields(); await _runtime.SaveAsync(SettingsJson.Clone(_draft), _draftGeometryRevision); _draft = SettingsJson.Clone(_runtime.Settings); _draftGeometryRevision = _runtime.GeometryRevision; BuildTabs(); }
         finally { _saving = false; }
     }
 }

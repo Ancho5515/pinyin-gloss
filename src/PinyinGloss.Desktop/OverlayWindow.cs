@@ -9,14 +9,14 @@ using PinyinGloss.Core;
 namespace PinyinGloss.Desktop;
 internal sealed class OverlayWindow : Window
 {
-    private readonly Grid _grid = new(); private readonly Border _border;
-    private readonly Dictionary<(string, string), TextBlock> _cells = [];
+    private readonly OverlayContent _content = new(); private readonly Border _border;
     private CandidateSnapshot? _snapshot; private AppSettings? _settings;
     public OverlayWindow()
     {
         WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.NoResize; AllowsTransparency = true; Background = Brushes.Transparent;
+        OverlayTheme.ApplyTypography(this);
         ShowActivated = false; ShowInTaskbar = false; Topmost = true; SizeToContent = SizeToContent.Height; Focusable = false;
-        _border = new Border { Padding = new(10), CornerRadius = new(8), BorderThickness = new(1), BorderBrush = Brushes.Gray, Child = _grid };
+        _border = new Border { Padding = new(10), CornerRadius = new(OverlayTheme.CornerRadius), BorderThickness = new(1) };
         Content = _border;
         SourceInitialized += (_, _) =>
         {
@@ -29,56 +29,43 @@ internal sealed class OverlayWindow : Window
     public void SetSnapshot(CandidateSnapshot snapshot, AppSettings settings)
     {
         _snapshot = snapshot; _settings = settings;
-        _border.Background = settings.Display.Dark ? new SolidColorBrush(Color.FromRgb(31, 35, 43)) : Brushes.White;
-        _grid.Children.Clear(); _grid.RowDefinitions.Clear(); _grid.ColumnDefinitions.Clear(); _cells.Clear();
-        var columns = settings.Columns.Where(c => c.Enabled).ToArray();
-        _grid.ColumnDefinitions.Add(new() { Width = new GridLength(125) });
-        foreach (var col in columns) _grid.ColumnDefinitions.Add(new() { Width = new GridLength(col.Width, GridUnitType.Star) });
-        var foreground = settings.Display.Dark ? Brushes.White : Brushes.Black;
-        TextBlock Add(string text, int row, int column, Brush? color = null)
-        {
-            var block = new TextBlock { Text = text, Foreground = color ?? foreground, Margin = new(6, 5, 6, 5), TextWrapping = TextWrapping.Wrap, MaxHeight = 70, TextTrimming = TextTrimming.CharacterEllipsis };
-            Grid.SetRow(block, row); Grid.SetColumn(block, column); _grid.Children.Add(block); return block;
-        }
-        _grid.RowDefinitions.Add(new() { Height = GridLength.Auto }); Add(snapshot.CaptureMethod == "Demo" ? "模拟候选" : "微软候选", 0, 0);
-        for (var i = 0; i < columns.Length; i++)
-        {
-            var source = settings.Providers.First(p => p.Id == columns[i].SourceId);
-            Add($"{source.Name}\n{LanguageCatalog.Name(columns[i].TargetLanguage)}", 0, i + 1, ColorBrush(columns[i], settings));
-        }
-        var words = snapshot.Candidates.Take(settings.Capture.MaxCandidates).ToArray();
-        for (var row = 0; row < words.Length; row++)
-        {
-            _grid.RowDefinitions.Add(new() { Height = GridLength.Auto }); Add($"{words[row].VisibleIndex}  {words[row].Text}", row + 1, 0);
-            for (var col = 0; col < columns.Length; col++) _cells[(words[row].Id, columns[col].Id)] = Add("等待…", row + 1, col + 1, ColorBrush(columns[col], settings));
-        }
-        Width = 125 + columns.Sum(c => c.Width) + 22;
-        var work = WorkArea(snapshot.Bounds); var dpi = CandidateDpi(snapshot); Width = Math.Min(Width, work.Width * settings.Display.MaxWidthRatio / dpi);
-        if (!IsVisible) Show(); UpdateLayout(); Position();
+        var replaced = _content.SetSnapshot(snapshot, settings);
+        ApplyTheme();
+        if (replaced) PresentPage(); else Position();
     }
+    public void BeginUpdate() => _content.BeginUpdate();
     public void MoveSnapshot(CandidateSnapshot snapshot) { _snapshot = snapshot; Position(); }
     public void UpdateCell(TranslationCell cell)
     {
-        if (_snapshot?.SnapshotId != cell.SnapshotId || _snapshot.Generation != cell.Generation || _settings?.SettingsRevision != cell.SettingsRevision) return;
-        if (!_cells.TryGetValue((cell.Result.CandidateId, cell.ColumnId), out var block)) return;
-        var column = _settings.Columns.FirstOrDefault(c => c.Id == cell.ColumnId);
-        if (column?.TargetLanguage != cell.TargetLanguage || !_snapshot.Candidates.Any(c => c.Id == cell.Result.CandidateId && c.Text == cell.Result.OriginalText)) return;
-        var source = _settings.Providers.FirstOrDefault(p => p.Id == cell.ActualSourceId);
-        block.Text = cell.Result.Status == ResultStatus.Ready ? cell.Result.Gloss + (cell.ActualSourceId != column.SourceId ? $"\n[{source?.Name ?? cell.ActualSourceId}]" : "") : cell.Result.Status switch
-        { ResultStatus.NotFound => "无释义", ResultStatus.Timeout => "超时", ResultStatus.InvalidOutput => "输出无效", ResultStatus.Unavailable => "来源未就绪", ResultStatus.Skipped => "已跳过", _ => "等待…" };
+        if (_content.UpdateCell(cell) && !ReferenceEquals(_border.Child, _content.Displayed)) PresentPage();
     }
-    public void Invalidate() { _snapshot = null; Hide(); }
-    private static Brush ColorBrush(ColumnSettings c, AppSettings s) => SystemParameters.HighContrast ? SystemColors.WindowTextBrush :
-        new SolidColorBrush((Color)ColorConverter.ConvertFromString(s.Display.Dark ? c.ColorDark : c.ColorLight));
+    public void Invalidate() { _snapshot = null; _content.Invalidate(); Hide(); }
+    private void PresentPage()
+    {
+        if (_snapshot == null || _settings == null) return;
+        _border.Child = _content.Displayed;
+        Width = 125 + _settings.Columns.Where(c => c.Enabled).Sum(c => c.Width) + 22;
+        var work = WorkArea(_snapshot.Bounds); var dpi = CandidateDpi(_snapshot);
+        Width = Math.Min(Width, work.Width * _settings.Display.MaxWidthRatio / dpi);
+        if (!IsVisible) Show(); UpdateLayout(); Position();
+    }
+    private void ApplyTheme()
+    {
+        if (_settings == null) return;
+        var theme = OverlayTheme.Create(_settings.Display, OverlayTheme.ReadSystemDark(), SystemParameters.HighContrast);
+        _border.Background = new SolidColorBrush(theme.Background); _border.BorderBrush = new SolidColorBrush(theme.Border);
+        _content.ApplyTheme(theme);
+    }
     private void Position()
     {
-        if (_snapshot == null || _settings == null || !IsVisible) return;
+        if (_snapshot == null || _settings == null) return;
         var bounds = _snapshot.Bounds; var work = WorkArea(bounds); var dpi = CandidateDpi(_snapshot);
         var width = ActualWidth * dpi; var height = ActualHeight * dpi;
         var x = Math.Clamp(bounds.X + _settings.Display.OffsetX * dpi, work.X, Math.Max(work.X, work.X + work.Width - width));
         var y = bounds.Y + bounds.Height + _settings.Display.OffsetY * dpi;
         if (y + height > work.Y + work.Height) y = bounds.Y - height - _settings.Display.OffsetY * dpi;
         if (y < work.Y) { Hide(); return; } // Never cover the original candidate popup if there is no room.
+        if (!IsVisible) Show();
         SetWindowPos(new WindowInteropHelper(this).Handle, -1, (int)x, (int)y, (int)width, (int)height, 0x10);
     }
     private static double CandidateDpi(CandidateSnapshot snapshot)
@@ -96,7 +83,13 @@ internal sealed class OverlayWindow : Window
         return new(0, 0, SystemParameters.PrimaryScreenWidth, SystemParameters.PrimaryScreenHeight);
     }
     private nint Hook(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
-    { if (message == 0x21) { handled = true; return 3; } if (message == 0x84) { handled = true; return -1; } return 0; }
+    {
+        if (message == 0x21) { handled = true; return 3; }
+        if (message == 0x84) { handled = true; return -1; }
+        // WM_SETTINGCHANGE / WM_THEMECHANGED / WM_SYSCOLORCHANGE: recolor in place after WPF refreshes system colors.
+        if (message is 0x1A or 0x31A or 0x15) Dispatcher.BeginInvoke(ApplyTheme);
+        return 0;
+    }
     [StructLayout(LayoutKind.Sequential)] private struct NativeRect { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] private struct MonitorInfo { public int Size; public NativeRect Monitor, Work; public uint Flags; }
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern nint GetWindowLongPtr(nint hwnd, int index);

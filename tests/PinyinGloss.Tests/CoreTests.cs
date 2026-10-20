@@ -102,6 +102,26 @@ public class CoreTests
         Assert.Empty(p.Calls);
     }
 
+    [Theory]
+    [InlineData(ResultStatus.Ready)]
+    [InlineData(ResultStatus.NotFound)]
+    public async Task Dictionary_results_do_not_wait_for_model_stability(ResultStatus status)
+    {
+        var settings = AppSettings.CreateDefault();
+        settings.Response.StableMs = 2000;
+        settings.Response.SnapshotDeadlineMs = 3000;
+        settings.Providers = [new() { Id = "dictionary", Kind = ProviderKind.LocalDictionary }];
+        settings.Columns = [new() { Id = "en", SourceId = "dictionary", TargetLanguage = "en" }];
+        var provider = new RecordingProvider(status, ProviderKind.LocalDictionary);
+        using var coordinator = new TranslationCoordinator(new Dictionary<string, ITranslationProvider> { ["dictionary"] = provider }, settings);
+        var result = new TaskCompletionSource<TranslationCell>(TaskCreationOptions.RunContinuationsAsynchronously);
+        coordinator.CellUpdated += cell => result.TrySetResult(cell);
+        coordinator.Submit(Snapshot("dictionary-immediate", "缺词测试"));
+        var cell = await result.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(status, cell.Result.Status);
+        await coordinator.WhenIdleAsync().WaitAsync(TimeSpan.FromSeconds(1));
+    }
+
     [Fact]
     public async Task Updating_settings_invalidates_inflight_result()
     {
@@ -122,6 +142,33 @@ public class CoreTests
         using var c = new TranslationCoordinator(new Dictionary<string, ITranslationProvider> { ["model"] = p }, s);
         foreach (var word in new[] { "苹果", "保险", "苹果", "支持", "苹果" }) { c.Submit(Snapshot(Guid.NewGuid().ToString(), word)); await c.WhenIdleAsync(); }
         Assert.Equal(new[] { "苹果:en", "保险:en", "支持:en" }, p.Calls);
+    }
+
+    [Fact]
+    public async Task Model_without_dictionary_publishes_waiting_before_stability_delay()
+    {
+        var settings = ModelSettings(); settings.Response.StableMs = 2000;
+        settings.Response.SnapshotDeadlineMs = 3000;
+        var provider = new RecordingProvider();
+        using var coordinator = new TranslationCoordinator(new Dictionary<string, ITranslationProvider> { ["model"] = provider }, settings);
+        var first = new TaskCompletionSource<TranslationCell>(TaskCreationOptions.RunContinuationsAsynchronously);
+        coordinator.CellUpdated += cell => first.TrySetResult(cell);
+        coordinator.Submit(Snapshot("waiting", "苹果"));
+        var cell = await first.Task.WaitAsync(TimeSpan.FromSeconds(1));
+        Assert.Equal(ResultStatus.Pending, cell.Result.Status);
+        Assert.Empty(provider.Calls);
+        coordinator.Hide(); await coordinator.WhenIdleAsync();
+    }
+
+    [Fact]
+    public async Task Waiting_does_not_count_as_finished_at_snapshot_deadline()
+    {
+        var settings = ModelSettings(); settings.Response.StableMs = 2000;
+        settings.Response.SnapshotDeadlineMs = 100;
+        using var coordinator = new TranslationCoordinator(new Dictionary<string, ITranslationProvider> { ["model"] = new RecordingProvider() }, settings);
+        var statuses = new List<ResultStatus>(); coordinator.CellUpdated += cell => statuses.Add(cell.Result.Status);
+        coordinator.Submit(Snapshot("deadline", "苹果")); await coordinator.WhenIdleAsync();
+        Assert.Equal(new[] { ResultStatus.Pending, ResultStatus.Timeout }, statuses);
     }
 
     internal static AppSettings ModelSettings()
