@@ -238,3 +238,9 @@ dotnet build PinyinGloss.sln -c Release -m:1 -p:UseSharedCompilation=false
 - CIM 与 PnP 均只枚举到 NVIDIA 和 OrayIddDriver 虚拟显示设备，未看到 AMD 核显；不能假定“节能”一定切到核显，也不能仅据此断言 BIOS/混合模式设置。联想机型为 82JW，混合模式需用户在空闲时另行确认。
 - Excel 在最后快照中已退出；Visual Studio、Codex、企业微信、Clash Verge、CC Switch 仍在。WebView2 应按可执行路径及父链归属宿主，不要批量结束同名进程，以免中断正在使用的应用或代理。
 - 证据为 `artifacts/validation/gpu-memory-20261012/snapshot.json`、`snapshot-latest.json`；包含本机进程路径，不随 Git 分发。当前仅给出手动调整建议，GPU 推理仍未验收，Computer Use 暂停不变。
+
+### 2026-10-25 Actions 存储与发布流程
+
+- 普通 CI 保留 Linux 核心测试与 Windows 构建/后台回归；功能分支经 PR 验证，避免 push 与 PR 双跑；通过时不上传测试日志和自包含包。
+- 需要临时程序包时手动运行 CI 并启用 package，保留 1 天。正式版本改由独立 release.yml 响应 v* 标签或手动标签，先测试打包再上传 GitHub Release。
+- 新增 Artifact 审计维护：每周及默认分支 CI 结束后运行，保留最新成功安装包，仓库存在运行/排队任务时不删除，删除后重新列举验证。维护策略回归 16 项通过；实际 Windows/Linux CI 均已通过。具体规则见 docs/actions.md。
