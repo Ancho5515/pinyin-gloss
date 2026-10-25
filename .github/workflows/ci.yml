@@ -1,38 +1,88 @@
 name: Build and test
 on:
   push:
-    branches: [main, 'feat/**']
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'dictionaries/**'
+      - 'third-party/**'
+      - 'Setup-LLM.cmd'
+      - '*.sln'
+      - '*.props'
+      - '*.targets'
+      - 'global.json'
+      - 'NuGet.Config'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release.yml'
   pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'scripts/**'
+      - 'dictionaries/**'
+      - 'third-party/**'
+      - 'Setup-LLM.cmd'
+      - '*.sln'
+      - '*.props'
+      - '*.targets'
+      - 'global.json'
+      - 'NuGet.Config'
+      - '.github/workflows/ci.yml'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
+    inputs:
+      package:
+        description: '生成临时安装包（保留 1 天）；正式版本使用 release 工作流'
+        type: boolean
+        default: false
 permissions:
   contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 jobs:
   core-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: '10.0.x'
       - run: dotnet test tests/PinyinGloss.Tests -c Release --logger trx --results-directory artifacts/test-results
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: failure()
         with:
           name: core-test-results
           path: artifacts/test-results
+          retention-days: 1
   windows-build:
     needs: core-tests
     runs-on: windows-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9
         with:
           dotnet-version: '10.0.x'
       - run: dotnet build PinyinGloss.sln -c Release
-      - run: ./scripts/Publish.ps1
+      - name: Windows 后台回归
+        run: dotnet test tests/PinyinGloss.Windows.Tests -c Release --no-build --filter "Category!=InteractiveDesktop&Category!=DesktopCapture"
+      - name: 按需发布临时程序包
+        if: github.event_name == 'workflow_dispatch' && inputs.package
+        run: ./scripts/Publish.ps1 -BackgroundOnly
         shell: pwsh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: github.event_name == 'workflow_dispatch' && inputs.package
         with:
           name: pinyin-gloss-win-x64
           path: artifacts/pinyin-gloss-win-x64.zip
           if-no-files-found: error
+          retention-days: 1
+
