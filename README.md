@@ -29,7 +29,7 @@ cd pinyin-gloss
 ./artifacts/pinyin-gloss-win-x64/PinyinGloss.Desktop.exe
 ```
 
-若 PowerShell 策略阻止脚本，可使用你通常的本地脚本执行方式；无需更改全机策略。`Publish.ps1` 先运行测试，再分别发布主程序与读取器。CI 同样生成 `pinyin-gloss-win-x64.zip` 工件。
+若 PowerShell 策略阻止脚本，可使用你通常的本地脚本执行方式；无需更改全机策略。`Publish.ps1` 先运行测试，再分别发布主程序与读取器。CI 只执行构建和测试，不生成安装包。只有明确需要打包时才手动运行 `release.yml`（Actions → Release → Run workflow），或在本地执行 `Publish.ps1`；推送代码和版本标签不会自动打包。
 
 1. 打开“概览”，运行真实候选诊断；切换微软拼音，在记事本键入拼音并保持候选窗可见。
 2. 若诊断没有识别候选，查看 [Windows 验收清单](docs/windows-validation.md)。候选读取只接受受保护的微软输入宿主和明确标识的候选容器。
