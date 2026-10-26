@@ -244,3 +244,9 @@ dotnet build PinyinGloss.sln -c Release -m:1 -p:UseSharedCompilation=false
 - 普通 CI 保留 Linux 核心测试与 Windows 构建/后台回归；功能分支经 PR 验证，避免 push 与 PR 双跑；通过时不上传测试日志和自包含包。
 - 需要临时程序包时手动运行 CI 并启用 package，保留 1 天。正式版本改由独立 release.yml 响应 v* 标签或手动标签，先测试打包再上传 GitHub Release。
 - 新增 Artifact 审计维护：每周及默认分支 CI 结束后运行，保留最新成功安装包，仓库存在运行/排队任务时不删除，删除后重新列举验证。维护策略回归 16 项通过；实际 Windows/Linux CI 均已通过。具体规则见 docs/actions.md。
+
+### 2026-10-26 仅在用户明确指定时打包
+
+- 用户要求删除 CI 安装包和 CI 内打包行为；ci.yml 已移除 package 输入、发布脚本和安装包上传，仅保留构建/测试及失败诊断。
+- release.yml 仅保留 workflow_dispatch，推送版本标签不再自动打包。只有用户明确要求时才手动运行。
+- 维护任务核验 ci.yml 来源后清理全部已完成 CI 安装包，不再保留最新 CI 包；手动发布文件、来源不明文件和运行中任务仍保护。详见 docs/actions.md。

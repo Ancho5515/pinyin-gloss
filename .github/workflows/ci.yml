@@ -32,11 +32,6 @@ on:
       - '.github/workflows/ci.yml'
       - '.github/workflows/release.yml'
   workflow_dispatch:
-    inputs:
-      package:
-        description: '生成临时安装包（保留 1 天）；正式版本使用 release 工作流'
-        type: boolean
-        default: false
 permissions:
   contents: read
 concurrency:
@@ -74,15 +69,3 @@ jobs:
       - run: dotnet build PinyinGloss.sln -c Release
       - name: Windows 后台回归
         run: dotnet test tests/PinyinGloss.Windows.Tests -c Release --no-build --filter "Category!=InteractiveDesktop&Category!=DesktopCapture"
-      - name: 按需发布临时程序包
-        if: github.event_name == 'workflow_dispatch' && inputs.package
-        run: ./scripts/Publish.ps1 -BackgroundOnly
-        shell: pwsh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        if: github.event_name == 'workflow_dispatch' && inputs.package
-        with:
-          name: pinyin-gloss-win-x64
-          path: artifacts/pinyin-gloss-win-x64.zip
-          if-no-files-found: error
-          retention-days: 1
-

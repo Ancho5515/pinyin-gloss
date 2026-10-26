@@ -26,17 +26,22 @@ function planCleanup(artifacts, options = {}) {
       if (a.name === 'daily-stock-report-' + eventRun) protectedIds.add(a.id);
     }
   }
-  for (const group of ['package', 'snapshot', 'market', 'report']) {
+  for (const group of ['snapshot', 'market', 'report']) {
     const newest = items.filter(a => family(a.name) === group &&
       a.conclusion === 'success' && a.workflow_run?.head_branch === defaultBranch)
       .sort((a,b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id);
-    for (const a of newest.slice(0, group === 'package' ? 1 : 2)) protectedIds.add(a.id);
+    for (const a of newest.slice(0, 2)) protectedIds.add(a.id);
   }
   const keep = [], remove = [];
   for (const a of items) {
     const age = now - Date.parse(a.created_at);
-    const eligible = !busy && Number.isFinite(age) && age >= DAY &&
-      a.runStatus === 'completed' && family(a.name) && !protectedIds.has(a.id);
+    const kind = family(a.name);
+    const retiredCiPackage = ['codex-reset-windows', 'pinyin-gloss'].includes(repository) &&
+      kind === 'package' && a.workflowPath?.split('@')[0] === '.github/workflows/ci.yml';
+    // CI installation packages are retired. Explicit manual release assets are outside this API.
+    const oldTemporary = kind !== 'package' && Number.isFinite(age) && age >= DAY;
+    const eligible = !busy && a.runStatus === 'completed' && kind &&
+      (retiredCiPackage || oldTemporary) && !protectedIds.has(a.id);
     (eligible ? remove : keep).push(a);
   }
   return { keep, remove, busy, bytesBefore: items.reduce((n,a) => n + a.size_in_bytes, 0) };
@@ -113,4 +118,5 @@ async function runMaintenance({ github, context, core, mode = 'audit' }) {
 }
 
 module.exports = { planCleanup, executePlan, runMaintenance };
+
 
