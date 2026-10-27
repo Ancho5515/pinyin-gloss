@@ -1,42 +1,68 @@
+﻿#requires -Version 7.0
 [CmdletBinding()]
-param([bool]$SelfContained = $true, [switch]$BackgroundOnly)
+param([bool]$SelfContained = $true, [switch]$BackgroundOnly, [string]$OutputDirectory)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
-$out = Join-Path $root 'artifacts/pinyin-gloss-win-x64'
-$zip = Join-Path $root 'artifacts/pinyin-gloss-win-x64.zip'
+$artifactDirectory = [IO.Path]::GetFullPath((Join-Path $root 'artifacts'))
+$out = if (!$OutputDirectory) { Join-Path $artifactDirectory 'pinyin-gloss-win-x64' }
+    elseif ([IO.Path]::IsPathRooted($OutputDirectory)) { [IO.Path]::GetFullPath($OutputDirectory) }
+    else { [IO.Path]::GetFullPath((Join-Path $root $OutputDirectory)) }
+$savedEnvironment = @{}
+foreach ($name in @('DOTNET_ROOT','PATH','DOTNET_CLI_HOME','NUGET_PACKAGES')) { $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
+function Invoke-Dotnet {
+    param([string[]]$Arguments)
+    $PSNativeCommandUseErrorActionPreference = $false
+    $savedEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+        for ($attempt = 0; $attempt -lt 2; $attempt++) {
+            $output = @(); $missingCommand = $false
+            try { dotnet @Arguments 2>&1 | Tee-Object -Variable output | Out-Host; $exitCode = $LASTEXITCODE }
+            catch [Management.Automation.CommandNotFoundException] { $output = @($_.Exception.Message); $missingCommand = $true; $exitCode = 1; Write-Host $output[0] }
+            if ($exitCode -eq 0) { return }
+            $sdkError = $missingCommand -or ($output -join "`n") -match 'NETSDK1045|MSB4236|A compatible \.NET SDK was not found|No \.NET SDKs were found|You must install or update \.NET'
+            if ($attempt -ne 0 -or !$sdkError) { throw "dotnet 执行失败（退出码 $exitCode），已停止。" }
+            $localSdk = Join-Path $root 'artifacts/toolchain/dotnet'
+            if (!(Test-Path -LiteralPath (Join-Path $localSdk 'dotnet.exe'))) { throw '当前 dotnet 环境不可用，仓库内也没有可供切换的 .NET SDK。' }
+            Write-Output '检测到 dotnet 环境错误，临时切换到仓库 SDK 后重试一次。'
+            $env:DOTNET_ROOT = $localSdk
+            $env:PATH = $localSdk + [IO.Path]::PathSeparator + $env:PATH
+        }
+    } finally { [Console]::OutputEncoding = $savedEncoding }
+}
 Push-Location $root
 try {
-    dotnet test tests/PinyinGloss.Tests -c Release -m:1 -p:UseSharedCompilation=false
-    if ($LASTEXITCODE -ne 0) { throw 'Tests failed' }
-    if ($IsWindows) {
+    Invoke-Dotnet -Arguments @('test','tests/PinyinGloss.Tests','-c','Release','-m:1','-p:UseSharedCompilation=false')
+    if ($env:OS -eq 'Windows_NT') {
         $testOptions = @()
         if ($BackgroundOnly) {
             $testOptions = @('--filter', 'Category!=InteractiveDesktop&Category!=DesktopCapture')
             Write-Output '后台验证：不运行可见窗口或桌面采集测试；这些项目仍需另行验收。'
         }
-        dotnet test tests/PinyinGloss.Windows.Tests -c Release -m:1 -p:UseSharedCompilation=false @testOptions
-        if ($LASTEXITCODE -ne 0) { throw 'Windows tests failed' }
+        Invoke-Dotnet -Arguments (@('test','tests/PinyinGloss.Windows.Tests','-c','Release','-m:1','-p:UseSharedCompilation=false') + $testOptions)
     }
-    $expectedOut = [IO.Path]::GetFullPath((Join-Path $root 'artifacts/pinyin-gloss-win-x64'))
-    $workspacePrefix = [IO.Path]::GetFullPath($root) + [IO.Path]::DirectorySeparatorChar
-    if ([IO.Path]::GetFullPath($out) -ne $expectedOut -or !$expectedOut.StartsWith($workspacePrefix, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unexpected publish directory' }
-    $artifactDirectory = Split-Path -Parent $expectedOut
-    if ((Test-Path -LiteralPath $artifactDirectory) -and ((Get-Item -LiteralPath $artifactDirectory).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Artifact directory must not be a link' }
+    $out = $out.TrimEnd([IO.Path]::DirectorySeparatorChar)
+    if (!$out.StartsWith($artifactDirectory + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw '发布目录必须位于仓库 artifacts 内' }
+    $parent = Split-Path -Parent $out
+    while ($parent) {
+        if ((Test-Path -LiteralPath $parent) -and ((Get-Item -LiteralPath $parent).Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw '发布目录的父目录不能是链接' }
+        if ($parent -eq $artifactDirectory) { break }
+        $parent = Split-Path -Parent $parent
+    }
     if (Test-Path -LiteralPath $out) {
-        if ((Test-Path -LiteralPath (Join-Path $out 'LLM')) -or (Test-Path -LiteralPath (Join-Path $out 'llm-installation.json'))) {
-            throw '发布目录已有模型安装。请先移动整个旧发布目录，再重新发布，避免删除已下载权重或配置。'
-        }
         $item = Get-Item -LiteralPath $out
-        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Publish directory must not be a link' }
-        Remove-Item -LiteralPath $item.FullName -Recurse -Force
+        if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw '发布目录不能是链接' }
+        if (Get-ChildItem -LiteralPath $out -Recurse -Force | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint } | Select-Object -First 1) { throw '发布目录内不能包含链接' }
     }
-    dotnet publish src/PinyinGloss.Desktop -c Release -r win-x64 --self-contained $SelfContained.ToString().ToLowerInvariant() -o $out -m:1 -p:UseSharedCompilation=false
-    if ($LASTEXITCODE -ne 0) { throw 'Desktop publish failed' }
-    dotnet publish src/PinyinGloss.CandidateReader -c Release -r win-x64 --self-contained $SelfContained.ToString().ToLowerInvariant() -o (Join-Path $out 'reader') -m:1 -p:UseSharedCompilation=false
-    if ($LASTEXITCODE -ne 0) { throw 'Reader publish failed' }
-    foreach ($file in @('README.md','LICENSE','THIRD_PARTY_NOTICES.md')) { Copy-Item $file $out }
-    Copy-Item 'third-party' $out -Recurse
-    Copy-Item 'docs' $out -Recurse
+    $running = Get-Process -Name 'PinyinGloss.Desktop','PinyinGloss.CandidateReader' -ErrorAction SilentlyContinue |
+        Where-Object { !$_.Path -or $_.Path.StartsWith($out + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) }
+    if ($running) { throw '发布目录中的程序仍在运行，请先退出 Pinyin Gloss 再发布。' }
+    # 原位更新程序文件，保留 LLM、安装清单及其他已有数据。
+    Invoke-Dotnet -Arguments @('publish','src/PinyinGloss.Desktop','-c','Release','-r','win-x64','--self-contained',$SelfContained.ToString().ToLowerInvariant(),'-o',$out,'-m:1','-p:UseSharedCompilation=false')
+    Invoke-Dotnet -Arguments @('publish','src/PinyinGloss.CandidateReader','-c','Release','-r','win-x64','--self-contained',$SelfContained.ToString().ToLowerInvariant(),'-o',(Join-Path $out 'reader'),'-m:1','-p:UseSharedCompilation=false')
+    foreach ($file in @('README.md','LICENSE','THIRD_PARTY_NOTICES.md')) { Copy-Item $file $out -Force }
+    Copy-Item 'third-party' $out -Recurse -Force
+    Copy-Item 'docs' $out -Recurse -Force
     $setupScripts = Join-Path $out 'scripts'
     New-Item -ItemType Directory -Path $setupScripts -Force | Out-Null
     Copy-Item 'scripts/Setup-Llm.ps1','scripts/Get-LlamaRuntime.ps1' $setupScripts
@@ -54,7 +80,11 @@ try {
             }
         }
     }
-    if (Test-Path $zip) { Remove-Item $zip }
-    Compress-Archive -Path (Join-Path $out '*') -DestinationPath $zip
-    Write-Output "Published $zip"
-} finally { Pop-Location }
+    Write-Output "已发布到目录：$out"
+} finally {
+    Pop-Location
+    foreach ($name in $savedEnvironment.Keys) {
+        if ($null -eq $savedEnvironment[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+        else { [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process') }
+    }
+}

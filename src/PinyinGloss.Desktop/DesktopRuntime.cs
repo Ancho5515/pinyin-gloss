@@ -30,7 +30,7 @@ internal sealed class DesktopRuntime : IDisposable
     public bool ExitRequested { get; private set; }
     public string Status { get; private set; } = "等待当前应用的微软拼音候选";
     public string ModelStatus => string.Join("；", _providers.Values.OfType<HttpModelProvider>().Select(p => p.Describe().Id + "：" + p.State));
-    public string TextReadStatus { get; private set; } = "正文：空闲";
+    public string TextReadStatus => "正文：" + _textOverlay.StatusText + (_textOverlay.LastNotice is { } notice ? "\n最近正文提示：" + notice : "");
     public event Action<string>? StatusChanged;
     internal void ReportInstallationError(string error) => SetStatus(error);
     public DesktopRuntime(AppSettings settings, string settingsPath, string dataDirectory)
@@ -103,6 +103,7 @@ internal sealed class DesktopRuntime : IDisposable
                     (!_providers.TryGetValue(Settings.TextTranslation.SourceId, out var model) || model.Describe().Version == result.SourceVersion))
                 {
                     _textOverlay.UpdateResult(result);
+                    StatusChanged?.Invoke(Status);
                     if (result.Result.ErrorCode == "model_loading" && model is HttpModelProvider { IsLoading: false }) _textCoordinator?.RetryAfterModelLoad();
                 }
             });
@@ -139,13 +140,13 @@ internal sealed class DesktopRuntime : IDisposable
         else if (message.Kind == ReaderMessageKind.Text)
         {
             if (message.Text == null || _focus?.SessionId != message.Text.SessionId || _focus.ForegroundWindow != GetForegroundWindow().ToInt64())
-            { _textSnapshot = null; _textCoordinator?.Invalidate(); _textOverlay.Collapse(); return; }
+            { InvalidateText(); return; }
             _textSnapshot = message.Text; _textOverlay.Present(message.Text, null); _textCoordinator?.Submit(message.Text);
+            StatusChanged?.Invoke(Status);
         }
         else if (message.Kind == ReaderMessageKind.TextStatus && message.TextDiagnostic is { } diagnostic)
         {
             if (!Settings.TextTranslation.Enabled || !AcceptsTextDiagnostic(_focus, _textSnapshot, diagnostic, GetForegroundWindow().ToInt64())) return;
-            TextReadStatus = "正文：" + diagnostic.Describe();
             if (diagnostic.Status is not (PinyinGloss.Core.TextReadStatus.Success or PinyinGloss.Core.TextReadStatus.Composing or PinyinGloss.Core.TextReadStatus.Reading))
             { _textSnapshot = null; _textCoordinator?.Invalidate(); }
             _textOverlay.PresentReadStatus(diagnostic);
@@ -196,7 +197,7 @@ internal sealed class DesktopRuntime : IDisposable
     {
         _current = null; _coordinator?.Hide(); _overlay.Invalidate();
     }
-    private void InvalidateText() { _textSnapshot = null; _textCoordinator?.Invalidate(); _textOverlay.Collapse(); }
+    private void InvalidateText() { _textSnapshot = null; _textCoordinator?.Invalidate(); _textOverlay.Collapse(); StatusChanged?.Invoke(Status); }
     private void Invalidate() { CloseCandidates(); InvalidateText(); }
     public async Task SetEnabledAsync(bool enabled)
     {
@@ -212,6 +213,7 @@ internal sealed class DesktopRuntime : IDisposable
                 CheckForeground(); if (Settings.Enabled && _textSnapshot == result.Snapshot)
                 {
                     _textOverlay.UpdateResult(result);
+                    StatusChanged?.Invoke(Status);
                     if (result.Result.ErrorCode == "model_loading" && _providers.TryGetValue(Settings.TextTranslation.SourceId, out var model) && model is HttpModelProvider { IsLoading: false }) _textCoordinator?.RetryAfterModelLoad();
                 }
             });

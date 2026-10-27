@@ -1,6 +1,44 @@
 # 0.1 实现与验证记录
 
-更新：2026-10-20。保持微软拼音外挂路线，不增加 OCR。用户已恢复真实桌面验收授权；Windows-MCP 检测到真人输入时暂停操作。验收结论以本机记录为准，不将历史远程 CI 结果当作当前代码验证。
+更新：2026-10-26。保持微软拼音外挂路线，不增加 OCR。用户已恢复真实桌面验收授权；Windows-MCP 检测到真人输入时暂停操作。验收结论以本机记录为准，不将历史远程 CI 结果当作当前代码验证。
+
+## 统一构建与目录发布（2026-10-26）
+
+统一入口为 `scripts/Publish.ps1`，先直接使用当前 dotnet，只有工具、SDK 或运行时的明确环境错误才切换已有仓库 SDK 并重试一次；正常运行不切换工具链，编译、测试及网络错误直接停止并保留原始输出。原生命令输出临时统一为 UTF-8。按 Release 测试后原位更新主程序、读取器及配套文件，保留已有模型与安装清单，只生成目录，不创建或修改 ZIP。系统 SDK 9.0.302 不符合 global.json，仓库 SDK 10.0.302 已实测可用。可用 `-BackgroundOnly` 运行后台回归，`-OutputDirectory` 指定仓库 artifacts 内的其他目录。同目录程序仍在运行或输出路径含链接时停止。成功与失败均恢复调用者编码、工具链环境和工作目录。
+
+| 本轮验证 | 结果 |
+| --- | --- |
+| `pwsh -NoProfile -File tests/scripts/Publish.Tests.ps1` | 8 项通过、退出码 0；覆盖不生成 ZIP、已有 ZIP/模型保护、输出边界、失败停止和环境恢复 |
+| `pwsh -NoProfile -File scripts/Publish.ps1 -BackgroundOnly -OutputDirectory artifacts/validation/unified-publish-20261026/published` | 核心 99 + Windows 后台 191 = 290 通过，0 失败；8 项桌面测试过滤，Desktop/reader 自包含目录发布退出码 0 |
+| 产物及原文件核对 | 16 个必要文件存在，主程序与 reader 的 Core hash 一致；无新 ZIP、无模型或本机清单；正式 Desktop、reader、安装清单及已有 ZIP 的 SHA256 均未改变 |
+
+上述独立目录验证的 8 行 NU1900 为 NuGet 漏洞数据源不可达，未宣称漏洞审计通过。证据在 `artifacts/validation/unified-publish-20261026/`。该次验证未替换或启动正式程序；默认目录更新结果见下节。GitHub 手动 Release 同样不压缩或上传程序包，只验证构建并创建版本说明，尚未在线执行该工作流。既有 Release 附件不自动删除。
+
+### 按错误修复 Python/dotnet 并重试
+
+- `Publish.Tests.ps1` 扩展为 14 项，`Convert-Lmt.Tests.ps1` 为 7 项，均通过、退出码 0。覆盖现有环境直接成功、命令/SDK 缺失后恢复、错误 PYTHONHOME、缺模块时尝试已有解释器、代码/网络错误不修环境、重试上限与变量恢复。
+- Python 转换使用当前解释器；明确环境错误后最多重试一次。标准库路径错误且存在 PYTHONHOME 时仅临时清除该变量，其他环境错误尝试已有虚拟环境或 `py -3`。没有可用工具或再次失败时停止，不自动安装依赖。转换业务错误直接停止。
+- 真实系统 dotnet 9 首次运行 `test` 返回兼容 SDK 缺失，生产脚本识别后切换仓库 SDK，核心 99 + Windows 后台 191 = 290 项通过，Desktop/reader 目录发布退出码 0。仅为测试命令配置本轮 CLI/cache 目录，未预先切换 SDK；正式程序未替换。
+- 生产 Python 调用函数的真实冒烟验证：错误 PYTHONHOME 导致 encodings 初始化失败，自动临时清除后重试并输出 `PYTHON_RUNTIME_RECOVERED`，退出码 0。没有运行真实模型转换；模型转换链路只用隔离替身检查，不能作为权重质量验收。
+- 证据：`artifacts/validation/runtime-retry-20261026/` 下的 `dotnet-before/after.log`、`python-before/after.log`、`python-native.log`、`publish-native.log`。
+- 两入口要求 PowerShell 7 并在旧版本运行前拒绝。PowerShell5.1 的 native stderr 处理不同，不能用其终止错误代表运行时修复无效；已核对实际入口拒绝行为。独立只读审查在明确 PowerShell7 范围内无剩余必须修问题。
+
+### 中文输出与保留模型的默认目录更新
+
+- 乱码根因：原生命令被管道捕获后，UTF-8 字节按调用终端的 GBK 编码解码。Publish 与 Python 转换函数现在临时用 UTF-8 读取 stdout/stderr；Python 同时临时设置 `PYTHONIOENCODING=utf-8`。成功、失败均恢复原编码和变量，不修改终端的永久设置。
+- 重复发布只覆盖程序和文档，不删除发布目录，因此保留 `LLM/`、`llm-installation.json` 和其他已有数据。发布前拒绝链接及同目录运行中的主程序/reader，不覆盖运行中程序，不创建或修改 ZIP。
+- `pwsh -NoProfile -File tests/scripts/Publish.Tests.ps1`：16 项通过；`Convert-Lmt.Tests.ps1`：7 项通过；`Native-Encoding.Tests.ps1`：4 项通过，均退出码 0。编码回归用真实 Python 输出验证 GBK 调用环境下的中文 stdout/stderr，以及退出码 0/7 后恢复原编码；没有转换模型权重。
+- 在 GBK 调用环境中实际执行 `scripts/Publish.ps1 -BackgroundOnly`，系统 SDK 9 首次失败后切换仓库 SDK，核心 99 + Windows 后台 191 = 290 通过、0 失败、0 跳过，8 桌面项过滤；默认目录 Desktop/reader 自包含发布退出码 0，中文日志正确，返回后仍为原 GBK 编码。两处 Core hash 一致。
+- 更新前后逐文件核对 113 个 LLM 文件、安装清单及旧 ZIP，共 115 个文件的完整 SHA256 和大小，全部不变。默认目录已更新，Q4 权重仍为 1282439264 字节、SHA256 `54C6244F100330264CEF607188413EE82CB8A254F0CF950011AAA9CEE74F7EB5`。
+- 正式 exe 已启动，主程序、reader、CUDA llama-server 均运行，原主界面控件状态读到“GPU 就绪（29/29 层）”。Computer Use 截图只显示桌面，激活窗口失败后停止输入；本项确认启动及模型就绪，不作为窗口可见显示或完整正文/IME 验收。独立只读审查无 Critical/Important 问题。
+- 证据：`artifacts/validation/publish-fix-20261026/` 下的修前/修后日志、`publish-native.log`、`protected-before/after.json`、`formal-main-window.txt`。
+
+## 正文框仅显示成功译文（2026-10-26）
+
+- 只有当前快照匹配原文、目标语言且译文非空的 Ready 结果才展开。读取、翻译、输入、加载、空文本及所有失败均清空可见内容、收成 28×28 DIP 小圆点；候选窗不改。
+- 状态与最近提示复用原主界面底部状态栏，打开主界面失焦后仍可查看原因，不增加产品界面。待译快照可接受对应成功结果；永久失败清身份，迟到结果不能重新展开。
+- Reader 先发布本轮 Focus/Text/TextStatus，再发送 scan-end，避免监督器重放上一轮 Success。
+- 最终核心 99、Windows 后台 191，共 290 通过，0 跳过、退出码 0；8 桌面项过滤。Release 0 警告/0 错误、退出码 0，独立只读审查无剩余问题。Windows-MCP 已核对隔离已知状态下的原主界面状态栏和 28×28 DIP 圆点，仅证明实际窗口呈现，不作为真实采集或模型质量验收。默认发布目录已包含此修复，旧 ZIP 保持不变，详见 [正文翻译测试](text-translation-testing.md)。
 
 ## 最新无选区显示修复（2026-10-20）
 

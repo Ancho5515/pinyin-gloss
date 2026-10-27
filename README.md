@@ -2,7 +2,7 @@
 
 微软拼音旁的多语言翻译外挂。微软拼音继续负责拼音、中文候选、排序、用户记忆和上屏；Pinyin Gloss 只观察可见候选，在独立窗口中并排显示释义。
 
-当前为 0.1 实验开发版。此前版本已在本机普通权限 Notepad3 打通真实微软拼音候选与词典/模型释义，在微软记事本验证当前句和选区翻译。最新正文修复已通过 242 项后台回归；Edge 本机专用网页的普通输入框、网页编辑区末尾输入与退格、句子和选区、多行及只读段落选区已实测。Codex 聊天选区的深层接口查找及空对象崩溃已修复，正式程序和压缩包已更新；新版生产链路读到聊天选区，用户现场确认翻译正常。无活动选区时收回圆圈的修复已构建，待更新程序并复测。本机企业微信自绘输入区尚无可用的直接文本接口。原站、Notepad3 新正文路径及真实 IME 回归仍待验收。右下角正文框可拖动、缩放，并与候选框共用主题；跨屏和完整主题切换仍需分别验收。不会安装或注册新输入法。
+当前为 0.1 实验开发版。此前版本已在本机普通权限 Notepad3 打通真实微软拼音候选与词典/模型释义，在微软记事本验证当前句和选区翻译。最新正文显示策略已通过 290 项后台回归：只有有效成功译文才展开，其他状态均收成小圆点，详情在原主界面状态栏查看；默认发布目录已更新。Edge 本机专用网页的普通输入框、网页编辑区末尾输入与退格、句子和选区、多行及只读段落选区已实测。Codex 聊天选区的深层接口查找及空对象崩溃已修复，正式程序和压缩包已更新；新版生产链路读到聊天选区，用户现场确认翻译正常。本机企业微信自绘输入区尚无可用的直接文本接口。原站、Notepad3 新正文路径及真实 IME 回归仍待验收。右下角正文框可拖动、缩放，并与候选框共用主题；跨屏和完整主题切换仍需分别验收。不会安装或注册新输入法。
 
 | 能力 | 首版状态 |
 | --- | --- |
@@ -20,7 +20,7 @@
 
 ## 快速开始
 
-环境：Windows x64，普通桌面会话。开发需要 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。自包含发布包不需要预装 .NET。当前不承诺安全桌面、管理员应用或任何尚未验证的 Windows build。
+环境：Windows x64，普通桌面会话。开发构建需要 PowerShell 7（`pwsh`）和 [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)。自包含发布包不需要预装 .NET。当前不承诺安全桌面、管理员应用或任何尚未验证的 Windows build。
 
 ```powershell
 git clone https://github.com/Ancho5515/pinyin-gloss.git
@@ -29,7 +29,7 @@ cd pinyin-gloss
 ./artifacts/pinyin-gloss-win-x64/PinyinGloss.Desktop.exe
 ```
 
-若 PowerShell 策略阻止脚本，可使用你通常的本地脚本执行方式；无需更改全机策略。`Publish.ps1` 先运行测试，再分别发布主程序与读取器。CI 只执行构建和测试，不生成安装包。只有明确需要打包时才手动运行 `release.yml`（Actions → Release → Run workflow），或在本地执行 `Publish.ps1`；推送代码和版本标签不会自动打包。
+若 PowerShell 策略阻止脚本，可使用你通常的本地脚本执行方式；无需更改全机策略。`Publish.ps1` 先用当前 dotnet 运行测试，遇到明确的工具或 SDK 环境错误才切换已有仓库 SDK 并重试一次，再将主程序、读取器及文档发布到 `artifacts/pinyin-gloss-win-x64/`，不生成 ZIP。CI 只执行构建和测试，不生成安装包。GitHub 手动发布入口见 [Actions 规则](docs/actions.md)。
 
 1. 打开“概览”，运行真实候选诊断；切换微软拼音，在记事本键入拼音并保持候选窗可见。
 2. 若诊断没有识别候选，查看 [Windows 验收清单](docs/windows-validation.md)。候选读取只接受受保护的微软输入宿主和明确标识的候选容器。
@@ -50,9 +50,9 @@ cd pinyin-gloss
 
 ## 离线模型
 
-默认适配 [NiuTrans/LMT-60-1.7B](https://huggingface.co/NiuTrans/LMT-60-1.7B) 翻译检查点，使用 Q4_K_M 权重量化、FP16 KV。程序交付是含主 exe、reader 与依赖文件的解压包，不是单文件 exe。权重不包含在程序包内。
+默认适配 [NiuTrans/LMT-60-1.7B](https://huggingface.co/NiuTrans/LMT-60-1.7B) 翻译检查点，使用 Q4_K_M 权重量化、FP16 KV。程序发布目录包含主 exe、reader 与依赖文件，不是单文件 exe。权重需单独准备。
 
-1. 解压后运行主 exe 同级的 `Setup-LLM.cmd`；直接回车选 Q4_K_M（1.28 GB），也可选 Q8_0、Q6_K 或 Q5_K_M。在同级 `LLM/` 下载所选社区 GGUF 与固定版 llama.cpp CUDA、CPU 两套运行时，校验 SHA256。启动优先 GPU，初始化失败再回退 CPU，设置页显示实际设备与原因。
+1. 在发布目录运行主 exe 同级的 `Setup-LLM.cmd`；直接回车选 Q4_K_M（1.28 GB），也可选 Q8_0、Q6_K 或 Q5_K_M。在同级 `LLM/` 下载所选社区 GGUF 与固定版 llama.cpp CUDA、CPU 两套运行时，校验 SHA256。启动优先 GPU，初始化失败再回退 CPU，设置页显示实际设备与原因。
 2. 完成后重启主程序。全新用户自动配置并预加载，已有手工配置或禁用状态会保留。
 3. 自定义目录用 `./scripts/Setup-Llm.ps1 -ModelDirectory 'D:\模型\LMT'`；量化可加 `-Quantization Q6_K`，仅用 CPU 可加 `-Backend Cpu`。当前自动 GPU 后端为 NVIDIA CUDA；其他 GPU 尚未接入。较小量化的译文质量需单独验证。详细来源、许可、恢复下载及后台验收见[模型准备说明](docs/model-setup.md)。
 
@@ -86,11 +86,11 @@ Translate this {{source_language_name}} word or short phrase into {{target_langu
 
 ## 句子与选区翻译
 
-准备并启用本地模型后，在“翻译窗 / 后台”分别开启句子与选区翻译。有效选区优先；没有选区时翻译活动编辑光标所在句。框默认固定在屏幕右下角，拖动标题移动、拖动边缘缩放，释放后保存位置与尺寸。没有活动目标时清空并收成圆圈，关闭两个开关后隐藏。
+准备并启用本地模型后，在“翻译窗 / 后台”分别开启句子与选区翻译。有效选区优先；没有选区时翻译活动编辑光标所在句。框默认固定在屏幕右下角，拖动标题移动、拖动边缘缩放，释放后保存位置与尺寸。只有当前目标的有效成功译文才展开；读取、翻译、输入中、模型加载、空文本及各类失败均清空可见内容并收成 28 DIP 小圆点。打开软件主界面可查看当前状态与最近一次提示，关闭两个开关后隐藏。
 
-本机企业微信 5.0.12.6018 的聊天编辑区目前不支持：该控件未提供可用的直接文本接口，通用设置中也未发现可开启的无障碍选项。显示“当前控件不支持正文读取”表示读取被拒绝，不表示翻译已完成。
+本机企业微信 5.0.12.6018 的聊天编辑区目前不支持：该控件未提供可用的直接文本接口，通用设置中也未发现可开启的无障碍选项。主界面的“当前控件不支持正文读取”表示读取被拒绝，不表示翻译已完成。
 
-这两项功能通过统一 TextReader 读取当前活动目标中的获准范围；UIA 借用父文档时必须限定到当前子控件，caret/selection 越界立即拒绝。IA2、Scintilla 兼容路径已接入，具体应用支持仍待分别实测。密码框、不支持控件和失效目标拒绝读取，不访问剪贴板；正文仅送给本地模型，不进入候选缓存或默认日志。局部采样最多 514 个 UTF-16 字符，最终当前句或完整选区最多 256 字符，再按模型实际分词检查预算；超限、接口缺失和读取故障明确显示原因。兼容范围、复现步骤和尚未完成的验收见 [正文翻译测试](docs/text-translation-testing.md)。Desktop 与 reader 的 IPC 已升级为 3，须整包更新。
+这两项功能通过统一 TextReader 读取当前活动目标中的获准范围；UIA 借用父文档时必须限定到当前子控件，caret/selection 越界立即拒绝。IA2、Scintilla 兼容路径已接入，具体应用支持仍待分别实测。密码框、不支持控件和失效目标拒绝读取，不访问剪贴板；正文仅送给本地模型，不进入候选缓存或默认日志。局部采样最多 514 个 UTF-16 字符，最终当前句或完整选区最多 256 字符，再按模型实际分词检查预算；超限、接口缺失和读取故障在主界面显示原因。兼容范围、复现步骤和尚未完成的验收见 [正文翻译测试](docs/text-translation-testing.md)。Desktop 与 reader 的 IPC 已升级为 3，须整包更新。
 
 ## 扩展词典与来源
 
@@ -102,13 +102,25 @@ Translate this {{source_language_name}} word or short phrase into {{target_langu
 
 ## 开发
 
+Windows 统一构建和目录发布入口，在仓库根目录执行：
+
+```powershell
+pwsh -NoProfile -File .\scripts\Publish.ps1 -BackgroundOnly
+```
+
+脚本先直接使用当前 dotnet，正常运行不切换工具链；原生命令的输出临时统一为 UTF-8，避免中文乱码。只有找不到命令、SDK 不匹配或运行时缺失等明确环境错误时，才临时切换到已有的 `artifacts/toolchain/dotnet` 并重试一次。编译、测试或网络错误直接停止，保留原始输出；缺少可用 SDK 时明确报错，不自动下载。项目要求 .NET 10。脚本按 Release 测试并发布自包含的 Windows x64 主程序、读取器、文档和模型准备脚本，只输出目录，不创建或修改 ZIP；执行结束恢复调用者的编码、工具链环境与工作目录。`-BackgroundOnly` 排除可见窗口和桌面采集测试，省略时仍运行完整 Windows 测试。
+
+默认输出为 `artifacts/pinyin-gloss-win-x64/`。重复发布会覆盖更新程序和文档，原位保留已有 `LLM/`、`llm-installation.json` 及其他数据，无需移动旧目录或重新下载模型。发布前先退出 Pinyin Gloss；同目录程序仍在运行时脚本会明确停止。也可用 `-OutputDirectory artifacts/pinyin-gloss-build` 指定仓库 `artifacts` 内的其他目录。
+
+已安装兼容 .NET 10 SDK 的环境也可直接使用：
+
 ```powershell
 dotnet test tests/PinyinGloss.Tests -c Release
 dotnet build PinyinGloss.sln -c Release
 ./scripts/Publish.ps1
 ```
 
-正在使用桌面时，后台测试用 `dotnet test PinyinGloss.sln -c Release --filter 'Category!=InteractiveDesktop&Category!=DesktopCapture'`，后台打包用 `./scripts/Publish.ps1 -BackgroundOnly`。排除的窗口/桌面采集测试需另行验收，默认发布仍运行完整 Windows 测试。主程序与 reader 使用同一构建配套文件。
+正在使用桌面时，后台测试用 `dotnet test PinyinGloss.sln -c Release --filter 'Category!=InteractiveDesktop&Category!=DesktopCapture'`，后台目录发布用 `./scripts/Publish.ps1 -BackgroundOnly`。排除的窗口/桌面采集测试需另行验收，默认发布仍运行完整 Windows 测试。主程序与 reader 使用同一构建配套文件。
 
 Linux 可运行核心与适配器测试，也可加 `-p:EnableWindowsTargeting=true` 交叉编译；交叉编译不能检验 Windows 交互。工程划分：
 

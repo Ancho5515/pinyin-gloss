@@ -64,11 +64,7 @@ internal static class Program
                 writer.TryWrite(new(ReaderMessageKind.Heartbeat, Status: "scan-start"));
                 var snapshot = scanner.Scan(max);
                 var text = textReader?.ReadAsync(new(sentence, selection, snapshot != null || scanner.IsConfirmingPage), token).GetAwaiter().GetResult();
-                writer.TryWrite(new(ReaderMessageKind.Heartbeat, Status: "scan-end"));
-                if (previousFocus != text?.Focus) { previousFocus = text?.Focus; writer.TryWrite(new(ReaderMessageKind.Focus, Focus: text?.Focus)); }
-                if (previousText != text?.Text) { previousText = text?.Text; writer.TryWrite(new(ReaderMessageKind.Text, Text: text?.Text)); }
-                if (text != null && previousTextDiagnostic != text.Diagnostic with { ElapsedMs = 0 })
-                { previousTextDiagnostic = text.Diagnostic with { ElapsedMs = 0 }; writer.TryWrite(new(ReaderMessageKind.TextStatus, TextDiagnostic: text.Diagnostic)); }
+                PublishTextRead(writer, text, ref previousFocus, ref previousText, ref previousTextDiagnostic);
                 // Page confirmation retains the previous display; only a real disappearance hides it.
                 var update = state.Update(snapshot, scanner.IsConfirmingPage);
                 if (update != null) writer.TryWrite(update.Kind == ReaderMessageKind.Hidden ? update with { Kind = ReaderMessageKind.CandidatesClosed } : update);
@@ -78,5 +74,14 @@ internal static class Program
         }
         catch (Exception ex) { writer.TryWrite(new(ReaderMessageKind.Hidden, Status: ex.GetType().Name)); }
         finally { if (foregroundHook != 0) Native.UnhookWinEvent(foregroundHook); if (objectHook != 0) Native.UnhookWinEvent(objectHook); writer.TryComplete(); GC.KeepAlive(callback); }
+    }
+    internal static void PublishTextRead(ChannelWriter<ReaderMessage> writer, TextReadResult? text,
+        ref InputFocus? previousFocus, ref TextSnapshot? previousText, ref TextReadDiagnostic? previousTextDiagnostic)
+    {
+        if (previousFocus != text?.Focus) { previousFocus = text?.Focus; writer.TryWrite(new(ReaderMessageKind.Focus, Focus: text?.Focus)); }
+        if (previousText != text?.Text) { previousText = text?.Text; writer.TryWrite(new(ReaderMessageKind.Text, Text: text?.Text)); }
+        if (text != null && previousTextDiagnostic != text.Diagnostic with { ElapsedMs = 0 })
+        { previousTextDiagnostic = text.Diagnostic with { ElapsedMs = 0 }; writer.TryWrite(new(ReaderMessageKind.TextStatus, TextDiagnostic: text.Diagnostic)); }
+        writer.TryWrite(new(ReaderMessageKind.Heartbeat, Status: "scan-end"));
     }
 }

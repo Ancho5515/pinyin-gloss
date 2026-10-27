@@ -16,8 +16,11 @@ internal sealed class TextOverlayWindow : Window
     private readonly DockPanel _panel = new();
     private AppSettings _settings = AppSettings.CreateDefault();
     private TextSnapshot? _snapshot;
-    private string? _shownOriginal, _shownTranslation;
+    private ProviderResult? _result;
+    private TextReadStatus _readStatus = TextReadStatus.Success;
     private bool _collapsed = true, _placing;
+    public string StatusText { get; private set; } = "空闲";
+    public string? LastNotice { get; private set; }
     public event Action<double, double, double, double>? GeometryChanged;
     public TextOverlayWindow()
     {
@@ -40,68 +43,76 @@ internal sealed class TextOverlayWindow : Window
     public void ShowConfigured() { if (!_settings.Enabled || !_settings.TextTranslation.Enabled) { Hide(); return; } if (!IsVisible) Show(); Place(); }
     public void Collapse()
     {
-        _snapshot = null; _shownOriginal = _shownTranslation = null; _original.Text = _translation.Text = _title.Text = "";
+        _snapshot = null; _result = null; _readStatus = TextReadStatus.Success; StatusText = "空闲";
+        CollapseContent();
+    }
+    private void CollapseContent()
+    {
+        _original.Text = _translation.Text = _title.Text = "";
         _collapsed = true; _placing = true; MinWidth = MinHeight = 0; Width = Height = 28; ResizeMode = ResizeMode.NoResize;
         _border.Child = null; _border.CornerRadius = new(14); _placing = false;
         if (IsVisible) Place();
     }
     public void Present(TextSnapshot snapshot, ProviderResult? result)
     {
-        var same = _snapshot?.SessionId == snapshot.SessionId && _snapshot.TargetIdentity == snapshot.TargetIdentity && _snapshot.Mode == snapshot.Mode;
-        if (!same) { _shownOriginal = _shownTranslation = null; }
-        _snapshot = snapshot;
+        _snapshot = snapshot; _result = result; _readStatus = TextReadStatus.Success;
+        StatusText = DescribeCurrent();
+        if (!HasReadyTranslation()) LastNotice = StatusText;
+        RefreshContent();
+    }
+    private bool HasReadyTranslation() => _snapshot is { Status: null } snapshot && !string.IsNullOrWhiteSpace(snapshot.Text) &&
+        _result is { Status: ResultStatus.Ready } result && !string.IsNullOrWhiteSpace(result.Gloss) &&
+        result.OriginalText == snapshot.Text && result.TargetLanguage == _settings.TextTranslation.TargetLanguage;
+    private void RefreshContent()
+    {
+        if (_readStatus != TextReadStatus.Success || !HasReadyTranslation()) { CollapseContent(); return; }
         if (_collapsed)
         {
             _collapsed = false; _placing = true; MinWidth = 240; MinHeight = 100;
             Width = _settings.TextTranslation.Width; Height = _settings.TextTranslation.Height; ResizeMode = ResizeMode.CanResize;
             _border.Child = _panel; _border.CornerRadius = new(OverlayTheme.CornerRadius); _placing = false;
         }
-        _title.Text = (snapshot.Mode == TextMode.Selection ? "选中文本" : "当前句子") + " · " + LanguageCatalog.Name(_settings.TextTranslation.TargetLanguage);
-        if (result != null) Render(result);
-        else if (snapshot.Status == "composing" && _shownTranslation != null)
-        { _original.Text = _shownOriginal; _translation.Text = _shownTranslation + "\n输入中…"; }
-        else if (snapshot.Status != null) { _shownOriginal = _shownTranslation = null; _original.Text = snapshot.Text; _translation.Text = Error(snapshot.Status); }
-        else if (string.IsNullOrWhiteSpace(snapshot.Text)) { _shownOriginal = _shownTranslation = null; _original.Text = ""; _translation.Text = "等待输入"; }
-        else if (_shownTranslation != null) { _original.Text = _shownOriginal; _translation.Text = _shownTranslation + "\n更新中…"; }
-        else { _original.Text = snapshot.Text; _translation.Text = "翻译中…"; }
+        _title.Text = (_snapshot!.Mode == TextMode.Selection ? "选中文本" : "当前句子") + " · " + LanguageCatalog.Name(_settings.TextTranslation.TargetLanguage) + " · 翻译成功";
+        _original.Text = _snapshot.Text; _translation.Text = _result!.Gloss;
         ApplyTheme(); if (IsVisible) Place();
     }
     public void UpdateResult(TextTranslation result)
     {
         if (_snapshot != result.Snapshot || _settings.SettingsRevision != result.SettingsRevision || result.Result.OriginalText != _snapshot.Text ||
             result.Result.TargetLanguage != _settings.TextTranslation.TargetLanguage) return;
-        Render(result.Result);
+        _result = result.Result;
+        if (_readStatus == TextReadStatus.Success) StatusText = DescribeCurrent();
+        if (!HasReadyTranslation()) LastNotice = DescribeCurrent();
+        RefreshContent();
     }
     public void PresentReadStatus(TextReadDiagnostic diagnostic)
     {
-        if (diagnostic.Status is TextReadStatus.NoFocusedTarget or TextReadStatus.NoSelection or TextReadStatus.PasswordTarget or TextReadStatus.TargetChanged)
-        { Collapse(); _border.ToolTip = diagnostic.Describe(); return; }
         if (diagnostic.Status == TextReadStatus.Success)
         {
-            if (_snapshot is { } snapshot && snapshot.SessionId == diagnostic.SessionId && snapshot.Version == diagnostic.Version && _shownTranslation != null)
-            { _original.Text = _shownOriginal; _translation.Text = _shownTranslation; }
+            if (_snapshot is { } snapshot && snapshot.SessionId == diagnostic.SessionId && snapshot.Version == diagnostic.Version && snapshot.TargetIdentity == diagnostic.TargetIdentity)
+            { _readStatus = TextReadStatus.Success; StatusText = DescribeCurrent(); RefreshContent(); }
             return;
         }
-        if (diagnostic.Status == TextReadStatus.Composing) return;
-        if (diagnostic.Status == TextReadStatus.Reading && _snapshot != null) { _translation.Text = "正在读取…"; return; }
-        Present(new(diagnostic.SessionId ?? "status", diagnostic.Version, diagnostic.ForegroundWindow,
-            diagnostic.TargetIdentity ?? "status", TextMode.Sentence, "", "read_status"), null);
-        _title.Text = "正文翻译"; _translation.Text = diagnostic.Describe();
+        if (diagnostic.Status is not (TextReadStatus.Reading or TextReadStatus.Composing)) Collapse();
+        _readStatus = diagnostic.Status; StatusText = diagnostic.Describe();
+        if (diagnostic.Status is not (TextReadStatus.NoFocusedTarget or TextReadStatus.TargetChanged)) LastNotice = StatusText;
+        CollapseContent();
     }
-    private void Render(ProviderResult result)
+    private string DescribeCurrent()
     {
-        _original.Text = _snapshot?.Text ?? "";
-        _title.Text = (_snapshot?.Mode == TextMode.Selection ? "选中文本" : "当前句子") + " · " + LanguageCatalog.Name(_settings.TextTranslation.TargetLanguage) +
-            (result.Status == ResultStatus.Ready ? " · 翻译成功" : "");
-        _translation.Text = result.Status == ResultStatus.Ready ? result.Gloss : result.Status switch
-        { ResultStatus.Timeout => "翻译超时", ResultStatus.Cancelled => "已取消", ResultStatus.InvalidOutput => Error(result.ErrorCode),
-            ResultStatus.Unavailable when result.ErrorCode == "model_loading" => "模型加载中…", _ => "本地模型未就绪，请检查设置" };
-        if (result.Status == ResultStatus.Ready) { _shownOriginal = _original.Text; _shownTranslation = _translation.Text; }
+        if (_snapshot?.Status is { } status) return Error(status);
+        if (string.IsNullOrWhiteSpace(_snapshot?.Text)) return "等待输入";
+        if (_result == null || _result.Status == ResultStatus.Pending) return "翻译中…";
+        return _result.Status switch
+        { ResultStatus.Ready => HasReadyTranslation() ? "翻译成功" : "译文为空或与当前目标不匹配",
+            ResultStatus.Timeout => "翻译超时", ResultStatus.Cancelled => "已取消", ResultStatus.InvalidOutput => Error(_result.ErrorCode),
+            ResultStatus.NotFound => "没有可用译文", ResultStatus.Skipped => "已跳过翻译",
+            ResultStatus.Unavailable when _result.ErrorCode == "model_loading" => "模型加载中…", _ => "本地模型未就绪，请检查设置" };
     }
     private static string Error(string? status) => status switch
     { "too_long" => "文本过长", "multiple_selections" => "不支持多个选区", "composing" => "输入中…", "prompt_token_budget" => "文本超出模型输入预算", "output_truncated" => "译文达到输出上限，未完整生成",
         "invalid_text_scope" => TextReadMessages.Describe(TextReadStatus.InvalidTextScope), "no_suitable_provider" => TextReadMessages.Describe(TextReadStatus.NoSuitableProvider),
-        "access_denied" => TextReadMessages.Describe(TextReadStatus.AccessDenied), "no_caret" => TextReadMessages.Describe(TextReadStatus.NoCaret), _ => "当前应用不支持正文读取" };
+        "access_denied" => TextReadMessages.Describe(TextReadStatus.AccessDenied), "no_caret" => TextReadMessages.Describe(TextReadStatus.NoCaret), _ => "正文翻译失败，请查看模型状态" };
     private void ApplyTheme()
     {
         var theme = OverlayTheme.Create(_settings.Display, OverlayTheme.ReadSystemDark(), SystemParameters.HighContrast);

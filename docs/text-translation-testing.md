@@ -1,6 +1,27 @@
 # 句子与选区翻译测试
 
-更新：2026-10-20。右下角正文框与微软候选释义框独立。本文区分真实桌面、真实模型与自动回归；未测项不计通过。
+更新：2026-10-26。右下角正文框与微软候选释义框独立。本文区分真实桌面、真实模型与自动回归；未测项不计通过。
+
+## 2026-10-26 仅成功译文展开，详情复用原状态栏
+
+正文框仅当当前快照存在匹配原文、目标语言的非空 Ready 结果时展开。读取、翻译、输入中、模型加载、空文本和所有失败均清空可见内容，保持 28×28 DIP 小圆点。当前原因和一条无正文的最近提示复用原主界面底部状态栏，打开设置导致失焦后仍可查看。不新增产品界面，不改变候选窗、Provider 或正文读取范围。
+
+等待结果时保留有效任务身份，匹配的成功结果到达后自动展开；新文本等待时不显示旧译文。Reading/Composing 期间保持收圈，恢复必须匹配同一快照；永久失败清空身份，迟到结果不得恢复。模型加载后的有效快照重试保持原机制。
+
+确认并修复的时序问题：Reader 原先在当前 Focus/Text/TextStatus 之前发送 scan-end，监督器可能重放上一轮 Success。生产 PublishTextRead 现先发布当前结果，再发送 scan-end。新增通道回归覆盖本轮文本变更和 NoCaret，核对恢复时只使用当前版本和状态。最近提示覆盖 Reading、Composing、翻译等待和空输入，NoFocusedTarget/TargetChanged 不覆盖它。
+
+命令均在仓库根目录、使用 artifacts/toolchain/dotnet 中的 .NET 10.0.302。证据目录为 `artifacts/validation/text-overlay-ready-only-20261026/`。
+
+| 验证命令（本轮脚本位于上述证据目录） | 结果 |
+| --- | --- |
+| `Run-Checks.ps1 -Name before-desktop-session -Project tests/PinyinGloss.Windows.Tests -Filter FullyQualifiedName~TextOverlayTests` | 修前 43 失败、14 通过，退出码 1；主要为期望 28、实际 420 |
+| `Run-Checks.ps1 -Name review-before -Project tests/PinyinGloss.Windows.Tests -Filter 'FullyQualifiedName~TextReadPublicationTests\|FullyQualifiedName~The_reason_for_collapsing'` | 修前 6 失败、0 通过，退出码 1；当前版本应为 2 却恢复 1，最近提示应保留但为 null |
+| `Run-Checks.ps1 -Name final-background` | 核心 99 + Windows 后台 191 = 290 通过，0 跳过、退出码 0；8 桌面项过滤 |
+| `Build-Checks.ps1` | Release 与隔离验收宿主构建退出码 0、0 警告/0 错误；没有 publish 或打包 |
+
+首次受限会话中的 WPF 测试宿主未返回结果，已停止；在普通 Windows 会话重新执行后得到上述可核对结果。独立只读审查发现的两项时序/提示问题已修复并复核，无剩余发现。
+
+Windows-MCP 已通过局部截图核对生产原 MainWindow 的既有底部状态栏：当前正文空闲、最近提示“无法确认活动光标”；同时核对右下角无文字圆点，宿主记录宽高为 28×28 DIP、Visible=true。该隔离验收仅构造已知 NoCaret 状态并模拟失焦，不启动 reader 或模型、不改用户配置，因此只证明实际窗口呈现和原状态栏保留提示，不代表跨应用采集、真实 IME 或模型质量通过。结构化证据为 `original-main-gui.jsonl`；宿主已自动正常退出。默认发布目录已包含此修复，旧 ZIP 保持不变，发布与启动证据见 `artifacts/validation/publish-fix-20261026/`；本轮没有提交或推送。
 
 ## 2026-10-20 只读浏览无活动选区时收回圆圈
 

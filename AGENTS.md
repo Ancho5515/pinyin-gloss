@@ -14,6 +14,22 @@
 
 ## 项目边界
 
+### 2026-10-26 统一构建与目录发布入口
+
+- 系统 `dotnet` 当前只有 SDK 9.0.302，不能满足 global.json 的 10.0.100/latestFeature。仓库内 `artifacts/toolchain/dotnet/dotnet.exe --version` 实测为 10.0.302，可直接构建，不降低目标框架或修改 global.json。
+- 统一使用 `scripts/Publish.ps1`：先直接运行当前 dotnet，只有明确的工具/SDK/运行时环境错误才临时切换已有仓库 SDK，最多重试一次；不预先修改 CLI/cache 环境。编译、测试或网络错误保留原始输出并停止。按 Release 测试后发布自包含主程序、reader、文档和准备脚本，不生成或修改 ZIP。执行结束恢复调用者环境与工作目录，失败同样恢复。
+- 默认输出 `artifacts/pinyin-gloss-win-x64/`，原位覆盖程序和文档，保留已有 LLM、安装清单及其他数据，不递归删除发布目录。`-OutputDirectory` 可选择仓库 artifacts 内的独立目录；artifacts 根目录、越界路径、链接及同目录运行中程序均拒绝发布。`-BackgroundOnly` 继续排除 8 项桌面测试，不计通过。脚本行为、真实目录发布证据位于 `artifacts/validation/unified-publish-20261026/` 和 `artifacts/validation/publish-fix-20261026/`。
+- `tests/scripts/Publish.Tests.ps1` 8 项通过、退出码 0；真实统一入口发布到本轮独立目录，核心 99 + Windows 后台 191 = 290 通过，目录发布退出码 0，16 个配套文件与两处 Core hash 核对正确。正式 Desktop/reader、模型清单及旧 ZIP 的 SHA256 均未改变。8 行 NU1900 仅为漏洞数据源不可达，不宣称漏洞审计完成。GitHub 手动 Release 同样不压缩或上传程序包，只验证构建并创建版本说明；未在线执行，既有 Release 附件不自动删除。
+- 后续运行时修复回归扩展为发布 14 项、Python 转换 7 项，均通过。Convert-Lmt 先用当前 Python，环境错误后只尝试已有虚拟环境/py 或按标准库故障清除 PYTHONHOME，最多重试一次并恢复变量；不自动安装依赖或下载。真实 Python 的错误 PYTHONHOME 已失败后恢复运行，真实 Publish 已从系统 SDK 9 首次失败后切到仓库 SDK 完成 290 项回归和独立目录发布。Python 模型转换仅使用替身验证控制流，未进行真实权重转换；证据 `artifacts/validation/runtime-retry-20261026/`。
+- Publish/Convert-Lmt 入口均明确要求 PowerShell 7（`#requires -Version 7.0`），使用 UTF-8 BOM。已证实 PowerShell 5.1 会在 Stop 模式下把 native stderr 当成终止错误，绕过退出码分类；两个入口现会在运行前明确拒绝旧版本。Setup-LLM.cmd 及原准备脚本的 PowerShell5.1 支持不变。
+- 已复现原生管道输出 UTF-8 被 GBK 解码的乱码。两个 Invoke 函数临时统一 UTF-8，Python 同时设置 PYTHONIOENCODING，finally 恢复编码及变量。发布 16、Python 7、真实原生编码 4 项均通过。GBK 环境真实默认目录发布 290 项后台通过、退出码 0；113 个 LLM 文件、清单及旧 ZIP 共 115 个文件完整大小/SHA256 均不变，两处 Core hash 一致。正式程序、reader、CUDA 模型已启动，主界面控件状态 GPU 29/29 就绪；Computer Use 截图为桌面且激活失败后已停止输入，不作为完整窗口显示/正文/IME 验收。详细证据及边界见 docs/implementation-status.md 和 publish-fix-20261026。
+
+### 2026-10-26 正文框仅在成功时展开
+
+- 用户要求正文框所有非正常翻译状态均退化为小圆点，具体情况查看软件原主界面。生产规则现为当前快照匹配原文/目标语言且有非空 Ready 译文才展开；其余状态清空可见内容并收成 28×28 DIP。详情与最近提示复用原主界面底部状态栏，不为此新增产品界面。候选窗与读取边界不变。
+- 待译快照保留身份以接受成功结果，Reading/Composing 只收圈；永久失败清身份并拒绝迟到结果。已确认 scan-end 早于本轮 TextStatus 会让监督器重放旧 Success，现通过生产 PublishTextRead 先发布 Focus/Text/TextStatus，再发送 scan-end。非空闲最近提示覆盖读取、输入、翻译等待、加载与失败，打开主界面失焦后仍可查看，不存正文。
+- 显示策略修前 43 失败/14 通过；追加消息顺序和提示保留回归修前 6 失败/0 通过。最终后台核心 99、Windows 191，共 290 通过、0 跳过、退出码 0；8 桌面项过滤。Release 0 警告/0 错误，独立只读审查无剩余问题。Windows-MCP 在已知状态隔离宿主中已核对生产原主界面底部提示与右下角圆点，只代表窗口显示，不等同于真实采集/IME/模型验收。默认发布目录已包含此修复，旧 ZIP 保持不变，未提交推送；详见 docs/text-translation-testing.md 和 artifacts/validation/text-overlay-ready-only-20261026/。
+
 ### 2026-10-20 只读浏览无选区时收回圆圈
 
 - 用户报告知乎正常浏览、没有选中文字时仍展开“没有活动选区”。根因是 TextOverlayWindow.PresentReadStatus 将 NoSelection 落入通用失败展开分支；DesktopRuntime 已取消旧任务并清快照，无需改读取器。仅将 NoSelection 加入现有 Collapse 分支，诊断状态保留，其他读取失败仍显示原因。
@@ -228,7 +244,7 @@ dotnet build PinyinGloss.sln -c Release -m:1 -p:UseSharedCompilation=false
 
 - 默认 exe 同级 LLM 已实际配置于 artifacts/pinyin-gloss-win-x64/，当前为 Auto GPU 优先；Q8/Q4 通过硬链接复用已验证下载，CPU/CUDA 两套 runtime 配套。包内脚本在 Windows PowerShell 5.1 上直接不传目录重跑退出码 0，证据 gpu-20261012/setup-default-exe-fixed.log；主 App 未启动。旧 CPU 发布目录及模型已整体保留于 artifacts/pinyin-gloss-win-x64-cpu-baseline-20261012/，不要删除权重。
 - 新发布根目录清单的真实模型验收已退出码 0，确认 Q8_0 GPU 29/29 层、6 组基本词义、5 轮取消同 PID、三页 30/30 Ready 和释放；gpu-20261012/acceptance-default-exe.log。这仍不是正式 App/GUI 首启或真实微软候选模型闭环。zip 仅包含程序与脚本，不包含本机 LLM 或清单。
-- 该发布目录现在有 LLM 和清单，Publish.ps1 会为保护权重拒绝清理它。以后重发先把整个旧发布目录移到明确备份位置，不要递归删除模型。下载原件另在 artifacts/LLM/。
+- 该发布目录保留 LLM 和清单；当前 Publish.ps1 会原位更新程序并保留权重，重复发布无需移动旧目录，不要递归删除模型。下载原件另在 artifacts/LLM/。
 - CPU 阶段 67 项后台回归证据为 llm-20261012/publish-final.log；当前 GPU/量化选择阶段 85 项见 gpu-20261012/test-final.log。此前 llm-final-regression/ 的66项是加入超时状态回归前的记录，不能混淆。
 
 ### 2026-10-12 GPU 切换前的后台只读调查

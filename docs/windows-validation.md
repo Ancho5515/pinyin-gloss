@@ -1,5 +1,9 @@
 # Windows 验收与当前边界
 
+2026-10-26 默认目录发布：已修复中文管道乱码及已有模型时拒绝更新的问题。GBK 调用环境下真实发布退出码 0，核心 99 + Windows 后台 191 = 290 项通过，8 桌面项过滤；发布/Python/原生编码脚本回归共 27 项通过。113 个 LLM 文件、安装清单和旧 ZIP 共 115 个文件的大小及完整 SHA256 均不变，Desktop/reader 的 Core hash 一致。正式 exe、reader 与 CUDA 模型进程已启动，原主界面控件状态为“GPU 就绪（29/29 层）”。Computer Use 的截图显示桌面且窗口激活失败，已停止输入；不将该次启动核对视为窗口显示或完整正文/IME 验收。证据见 `artifacts/validation/publish-fix-20261026/` 及 [实现记录](implementation-status.md)。
+
+2026-10-26 正文显示规则：仅当前快照的非空成功译文展开，其余读取、翻译、组合、加载、空文本及失败全部收成 28×28 DIP 小圆点。详情与最近提示复用原主界面状态栏，失焦后仍保留；未新增产品界面。最终核心 99 + Windows 后台 191 = 290 通过、0 跳过、退出码 0，8 桌面项过滤；Release 0 警告/0 错误，独立只读审查无剩余问题。Windows-MCP 已核对隔离已知状态下的生产原主界面状态栏与真实圆点显示；此项仅证明窗口呈现，不证明真实 Provider/IME/模型完整链路。默认目录已包含此修复，正文现场验收边界未扩大，证据及命令见 [正文翻译测试](text-translation-testing.md)。
+
 2026-10-20 无选区收圈修复：用户报告知乎正常浏览、没有选中文字时正文框仍展开“没有活动选区”。已定位为显示层将 NoSelection 当通用错误，现归入 Collapse。修前 2 项失败；修后完整后台核心 99 + Windows 143 = 242 通过、0 跳过、退出码 0，8 桌面项过滤；Release 与 Desktop 自包含发布 0 警告/0 错误、退出码 0。独立只读审查无必须修项。更新前用户按 Esc 停止桌面控制，未继续操作；运行中的 Desktop 尚未替换，真实网页收圈复测待执行，不能将后台窗口回归等同于知乎实测。新代码已打包于 `artifacts/validation/no-selection-idle-20261020/`，详情见 [正文翻译测试](text-translation-testing.md)。
 
 2026-10-20 Codex 聊天选区接口深度修复：分阶段真实诊断确认，聚焦 Group 的第 16 层 Document 提供 TextPattern，RangeFromChild 成功且选区完整位于原 Group 子范围；原生产只查 8 层。现仅 Group/Selection 查找扩至 64 层，读取范围、密码与前台根拒绝条件不变。新增 9 场景修前 5 失败/4 通过；修后核心 99 + Windows 141 = 240 通过、0 跳过、退出码 0，8 桌面项过滤；Release/reader 发布 0 警告/0 错误。正式程序与 zip 已更新，正常重启后 GPU 29/29 就绪；新版生产链路实际读到 Group/RangeFromChild/Selection，用户完成聊天选区测试并确认“正常了”。正式 reader 多次核对保持同 PID。自动诊断不记录正文，翻译内容的现场确认来自用户。
@@ -30,7 +34,7 @@ live8 已验证真实微软拼音组合时保留正文旧译文、空格提交�
 
 用户已授权真实桌面验收，使用专用测试文档，Windows-MCP 报告真人控制或操作异常时停止当轮输入。词典用例见 [本地词典基础功能测试](local-dictionary-testing.md)。真实 Q8/Q4 CPU/CUDA 加载、基本词义、取消复用及缺 DLL 后 CPU 回退已验收，见[模型准备与实测](model-setup.md)；完整语言质量与其他 GPU/驱动兼容未验收。
 
-后台命令：`dotnet test PinyinGloss.sln -c Release --filter 'Category!=InteractiveDesktop&Category!=DesktopCapture'`；打包用 `./scripts/Publish.ps1 -BackgroundOnly`。暂停期间不得直接运行不带 filter 的完整测试、默认发布或可见验收宿主。新旧 Desktop/reader 不混用。
+后台命令：`dotnet test PinyinGloss.sln -c Release --filter 'Category!=InteractiveDesktop&Category!=DesktopCapture'`；目录发布用 `./scripts/Publish.ps1 -BackgroundOnly`，不生成 ZIP。暂停期间不得直接运行不带 filter 的完整测试、默认发布或可见验收宿主。新旧 Desktop/reader 不混用。
 
 ## 首先验证候选读取
 

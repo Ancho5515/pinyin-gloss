@@ -29,8 +29,9 @@ internal sealed class MainWindow : Window
         var buttons = new StackPanel { Orientation = Orientation.Horizontal }; buttons.Children.Add(Button("保存并应用", async () => await SaveAsync()));
         buttons.Children.Add(Button("重新载入", () => { _draft = SettingsJson.Clone(_runtime.Settings); _draftGeometryRevision = _runtime.GeometryRevision; BuildTabs(); }));
         buttons.Children.Add(Button("退出程序", _runtime.Exit)); footer.Children.Add(buttons); layout.Children.Add(footer); layout.Children.Add(_tabs); Content = layout;
-        _runtime.StatusChanged += text => _status.Text = text + "\n" + _runtime.TextReadStatus + (string.IsNullOrEmpty(_runtime.ModelStatus) ? "" : "\n" + _runtime.ModelStatus);
-        _status.Text = _runtime.Status; BuildTabs();
+        void RefreshStatus(string text) => _status.Text = text + "\n" + _runtime.TextReadStatus + (string.IsNullOrEmpty(_runtime.ModelStatus) ? "" : "\n" + _runtime.ModelStatus);
+        _runtime.StatusChanged += RefreshStatus;
+        RefreshStatus(_runtime.Status); BuildTabs();
         Closing += (_, e) => { if (!_runtime.ExitRequested && _runtime.Settings.Startup.CloseToTray) { e.Cancel = true; Hide(); } else if (!_runtime.ExitRequested) { e.Cancel = true; Dispatcher.BeginInvoke(_runtime.Exit); } };
     }
     private static Button Button(string text, Action action) { var button = new Button { Content = text }; button.Click += (_, _) => { try { action(); } catch (Exception ex) { MessageBox.Show(ex.Message, "Pinyin Gloss"); } }; return button; }
@@ -88,7 +89,7 @@ internal sealed class MainWindow : Window
         Integer(display, "正文最大合并等待（ms）", () => _draft.TextTranslation.MaxWaitMs, n => _draft.TextTranslation.MaxWaitMs = n);
         Integer(display, "正文翻译期限（ms）", () => _draft.TextTranslation.DeadlineMs, n => _draft.TextTranslation.DeadlineMs = n);
         display.Children.Add(Button("恢复正文框到屏幕右下角", () => { _draft.TextTranslation.Right = _draft.TextTranslation.Bottom = null; _draft.TextTranslation.Width = 420; _draft.TextTranslation.Height = 180; _draftGeometryRevision = _runtime.GeometryRevision; }));
-        display.Children.Add(Note("正文框固定位置，可拖动和缩放。选中文字优先于光标所在句；没有活动目标时为空闲圆圈，确认目标但无法读取时显示原因。正文只交给本地模型，不进入词典缓存或默认日志。两个正文开关默认关闭。"));
+        display.Children.Add(Note("正文框固定位置，可拖动和缩放。选中文字优先于光标所在句；只有成功译文才展开，其他状态均为小圆点，具体状态与最近提示见主界面底部。正文只交给本地模型，不进入词典缓存或默认日志。两个正文开关默认关闭。"));
         var follow = Toggle(display, "跟随 Windows 应用主题", _draft.Display.FollowSystemTheme, b => _draft.Display.FollowSystemTheme = b);
         var manualDark = Toggle(display, "深色翻译窗（手动）", _draft.Display.Dark, b => _draft.Display.Dark = b);
         manualDark.IsEnabled = !_draft.Display.FollowSystemTheme;
